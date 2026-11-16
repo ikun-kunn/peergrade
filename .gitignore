@@ -1,0 +1,6 @@
+# 智能体内部笔记
+.workbuddy/
+
+# 系统与日志杂项
+.DS_Store
+*.log

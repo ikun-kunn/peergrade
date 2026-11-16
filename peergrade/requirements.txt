@@ -1,0 +1,9 @@
+fastapi>=0.115,<1
+# 0.31.0 起 _TrustedHosts 才用 ipaddress 解析 CIDR；0.30.x 只做字符串精确匹配，
+# 会让 Dockerfile 的 --forwarded-allow-ips 网段静默失效，登录限流退回共享代理 IP 桶。
+uvicorn>=0.31,<1
+PyMuPDF>=1.24,<2
+python-multipart>=0.0.9,<1
+SQLAlchemy>=2,<3
+psycopg[binary]>=3,<4
+httpx>=0.27,<1

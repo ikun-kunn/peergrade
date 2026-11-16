@@ -1,0 +1,11 @@
+.deps
+.venv
+__pycache__
+*.pyc
+*.db
+.env
+tmp*
+frontend/node_modules
+frontend/dist
+tests
+.git
