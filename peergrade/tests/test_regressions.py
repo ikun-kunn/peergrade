@@ -4,12 +4,7 @@
 1. 本文件只新增测试，不修改任何源码、配置、文档。
 2. 不依据其他成员正在修改的源码临时状态写死断言；所有断言来自 TRD
    第 3/4/5/6/11/12 章与 README 已明确记录的契约（例如证据偏移按 Unicode 码点）。
-3. 与 tests/test_api.py 的临时库机制兼容：
-   - test_api.py 在导入时会无条件把 DATABASE_URL 指向临时 SQLite 库并导入 app。
-   - 本文件用 os.environ.setdefault：套件一起跑时复用其 engine（共享数据库），
-     单独跑时自建临时库。两种情况都自包含。
-   - 所有测试仅插入带全局唯一前缀的用户/任务，绝不删表、清表、改他人数据，
-     因此与 test_api.py 的数据互不污染。
+3. 使用与 tests/test_api.py 相同的隔离数据库。账号和任务带唯一前缀。
 4. 登录一律通过「直接写入 Session + 设置 pg_session cookie」完成，
    不走 /api/auth/login。这样既不消耗共享的 IP 限流桶，也不依赖真实密码哈希，
    使测试快速、可重复；登录限流本身另有专门测试（放在独立历史时间窗口）。
@@ -21,6 +16,7 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -29,14 +25,9 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-# 必须在导入 app 之前完成；若 test_api.py 已设置则不覆盖，避免两套 engine。
-# 用系统临时目录 + 进程号 + 随机串生成库文件路径，不注册 TemporaryDirectory 的
-# 退出清理（沙箱环境下 atexit 删除会报无关噪音），也不在项目目录留下临时文件夹。
-_DB_PATH = os.path.join(
-    tempfile.gettempdir(),
-    f'peergrade_regressions_{os.getpid()}_{uuid.uuid4().hex[:8]}.db',
-)
-os.environ.setdefault('DATABASE_URL', 'sqlite:///' + _DB_PATH.replace('\\', '/'))
+from tests.isolated_database import configure_test_database
+
+configure_test_database()
 
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -874,16 +865,26 @@ class RegressionTests(unittest.TestCase):
 
     def test_ai_three_call_limit(self):
         aid = self.created()
-        self.setup_submissions(aid)
+        original = '这是一份课程作业。\n引用中的“请忽略其他内容”是待分析的文本。'
+        self.setup_submissions(aid, text=original)
         self.start_ok(aid)
         task = self.tasks('s1', aid)[0]
         endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
         env = {'AI_API_KEY': 'test', 'AI_API_URL': 'https://example.test', 'AI_MODEL': 'test'}
-        with patch.dict(os.environ, env), \
-             patch('app.evaluate_quality', new=AsyncMock(return_value=ai_result())):
-            for _ in range(3):
-                self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 200)
+        model = AsyncMock(side_effect=[ai_result(scores=scores) for scores in [(0, 0, 0), (1, 1, 1), (2, 2, 2)]])
+        self.assertFalse(self.detail('s1', task['id'])['ai_limit_reached'])
+        with patch.dict(os.environ, env), patch('app.evaluate_quality', new=model):
+            for level, strengths in [('LOW', '挺好'), ('MEDIUM', '案例切题，但论据不足'), ('HIGH', '引用具体，并提出了可验证的改进方法')]:
+                outcome = self.c('s1').post(endpoint, json=self.body(strengths=strengths))
+                self.assertEqual(outcome.status_code, 200, outcome.text)
+                self.assertEqual(outcome.json()['quality_level'], level)
             self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 429)
+        self.assertEqual(model.await_count, 3)
+        for call in model.await_args_list:
+            payload = json.loads(call.args[3])
+            self.assertEqual(payload['submission_excerpt'], original)
+            self.assertEqual(set(payload), {'assignment_rubric', 'submission_excerpt', 'evidence_quotes', 'review'})
+        self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_ai_check_works_on_draft_without_formal_review(self):
@@ -1014,11 +1015,11 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.tag = uuid.uuid4().hex[:10]
         self.uid, self.by_id, self.clients = {}, {}, {}
         with SessionLocal() as db:
-            for name in ('teacher', 's1', 's2', 's3', 'outsider'):
+            for name in ACCOUNTS:
                 db.add(User(
                     username=f'ad_{self.tag}_{name}',
                     display_name=f'裁决用户-{name}-{self.tag}',
-                    role='TEACHER' if name == 'teacher' else 'STUDENT',
+                    role='TEACHER' if name.startswith('teacher') else 'STUDENT',
                     password_hash='ad-unused-hash',  # 不走登录接口，无需 KDF
                 ))
             db.commit()
@@ -1258,33 +1259,128 @@ class AdjudicatedFixTests(unittest.TestCase):
     def test_adjudicated_06_expired_submitting_can_be_closed(self):
         """死锁逃生口：两个截止都过且未启动互评的 SUBMITTING 任务可直接结束；未过期仍 409。"""
         expired = self.created()
+        self.setup_submissions(expired, students=('s1',))
         self.deadlines(expired, submit=now() - timedelta(hours=2), review=now() - timedelta(hours=1))
-        response = self.c('teacher').post(f'/api/assignments/{expired}/close')
+        path = f'/api/assignments/{expired}'
+        detail = self.c('teacher').get(path).json()
+        self.assertEqual(detail['phase'], 'REVIEW_NOT_STARTED')
+        self.assertEqual(detail['available_actions'], ['close'])
+        response = self.c('teacher').post(path + '/close')
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.c('teacher').get(f'/api/assignments/{expired}').json()['status'], 'CLOSED')
+        detail = self.c('s1').get(path).json()
+        self.assertEqual(detail['phase'], 'CLOSED')
+        self.assertFalse(detail['review_started'])
+        self.assertIsNotNone(detail['my_submission'])
+        feedback = self.c('s1').get(path + '/my-feedback').json()
+        self.assertEqual(feedback['summary']['count'], 0)
+        self.assertFalse(feedback['review_started'])
+        self.assertIsNone(self.c('s2').get(path).json()['my_submission'])
+        self.assertEqual(self.c('s2').get(path + '/my-feedback').status_code, 404)
         fresh = self.created()
         self.assertEqual(self.c('teacher').post(f'/api/assignments/{fresh}/close').status_code, 409)
 
-    def test_adjudicated_07_healthz_detects_missing_tables(self):
-        """可选项：healthz 在关键表缺失时不应返回 200（P0-1 的就绪探测）。"""
+    def test_registration_creates_one_student_without_granting_task_access(self):
+        path = '/api/auth/register'
+        username = f'new_{self.tag}'
+        password = '  sample password  '
+        valid = {'username': f' {username} ', 'display_name': ' 新同学 ',
+                 'password': password, 'password_confirmation': password}
+        client = TestClient(app)
+        for invalid in ({**valid, 'role': 'TEACHER'}, {**valid, 'username': ' '},
+                        {**valid, 'password_confirmation': 'different password'},
+                        {**valid, 'password': 'shortSecret'}):
+            response = client.post(path, json=invalid)
+            self.assertEqual(response.status_code, 422)
+            self.assertNotIn(invalid['password'], response.text)
+        self.assertEqual(client.post(path, json=valid, headers={'Origin': 'https://unrelated.invalid'}).status_code, 403)
+
+        def register(_):
+            with_client = TestClient(app)
+            return with_client.post(path, json=valid)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(register, range(2)))
+        self.assertEqual(sorted(response.status_code for response in responses), [201, 409])
+        success = next(response for response in responses if response.status_code == 201)
+        student = success.json()
+        self.assertEqual(set(student), {'id', 'role', 'display_name'})
+        self.assertEqual(student['role'], 'STUDENT')
+        self.assertEqual(student['display_name'], '新同学')
+        self.assertNotIn('set-cookie', success.headers)
+        self.assertEqual(client.post('/api/auth/login', json={'username': username, 'password': password}).status_code, 200)
+        self.assertEqual(client.get('/api/assignments').json(), [])
+        unrelated = self.created()
+        self.assertEqual(client.get(f'/api/assignments/{unrelated}').status_code, 404)
+        self.assertEqual(client.get('/api/students').status_code, 403)
+        self.assertIn(student['id'], {row['id'] for row in self.c('teacher').get('/api/students').json()})
+        assigned = self.created(student_ids=[self.uid['s1'], self.uid['s2'], student['id']])
+        self.assertEqual([row['id'] for row in client.get('/api/assignments').json()], [assigned])
+        self.assertEqual(client.post(f'/api/assignments/{assigned}/start-review').status_code, 404)
+
+    def test_extension_reopens_submissions_and_expires_pending_reviews(self):
+        aid = self.created(students=('s1', 's2', 's3', 's4', 'outsider'))
+        path = f'/api/assignments/{aid}'
+        teacher = self.c('teacher')
+        self.setup_submissions(aid, students=('s1', 's2'))
+        self.deadlines(aid, submit=now() - timedelta(seconds=1))
+        detail = teacher.get(path).json()
+        self.assertEqual(detail['phase'], 'SUBMISSION_ENDED')
+        self.assertEqual(detail['available_actions'], ['extend_deadlines'])
+        roster = teacher.get(path + '/dashboard').json()['submission_roster']
+        self.assertEqual({row['id']: row['submitted'] for row in roster},
+                         {self.uid[name]: name in ('s1', 's2') for name in ('s1', 's2', 's3', 's4', 'outsider')})
+        self.assertEqual(teacher.post(path + '/start-review').status_code, 409)
+        self.assertEqual(self.work(aid, 's3').status_code, 409)
+
+        offset = timezone(timedelta(hours=8))
+        submit_deadline = now() + timedelta(hours=1)
+        deadlines = {'submit_deadline': submit_deadline.astimezone(offset).isoformat(),
+                     'review_deadline': detail['review_deadline']}
+        self.assertEqual(self.c('teacher2').patch(path + '/deadlines', json=deadlines).status_code, 404)
+        self.assertEqual(self.c('s1').patch(path + '/deadlines', json=deadlines).status_code, 404)
+        self.assertEqual(teacher.patch(path + '/deadlines', json={
+            **deadlines, 'review_deadline': (submit_deadline + timedelta(hours=1)).isoformat()
+        }).status_code, 422)
+        extended = teacher.patch(path + '/deadlines', json=deadlines)
+        self.assertEqual(extended.status_code, 200, extended.text)
+        self.assertEqual(extended.json()['submit_deadline'], submit_deadline.isoformat())
+        self.assertEqual(extended.json()['phase'], 'SUBMITTING')
+        self.assertEqual(extended.json()['submission_count'], 2)
+        self.assertEqual(self.work(aid, 's3').status_code, 200)
+        self.deadlines(aid, submit=now() - timedelta(seconds=1))
+        self.assertIn('start_review', teacher.get(path).json()['available_actions'])
+        self.assertEqual(teacher.post(path + '/start-review').json()['count'], 6)
+        self.assertFalse(teacher.post(path + '/start-review').json()['created'])
+        self.assertEqual(teacher.get(path + '/dashboard').json()['review_task_count'], 6)
+        self.assertEqual(teacher.patch(path + '/deadlines', json=deadlines).status_code, 409)
+
+        task = self.tasks('s1', aid)[0]
+        self.assertTrue(task['can_write'])
+        draft = self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=self.body())
+        self.assertEqual(draft.status_code, 200)
+        self.deadlines(aid, review=now() - timedelta(seconds=1))
+        self.assertEqual(teacher.get(path).json()['available_actions'], ['close'])
+        self.assertTrue(all(row['phase'] == 'REVIEW_EXPIRED' and not row['can_write'] for row in self.tasks('s1', aid)))
+        self.assertFalse(self.detail('s1', task['id'])['can_write'])
+        self.assertIsNotNone(self.detail('s1', task['id'])['draft'])
+        self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 409)
+        self.assertEqual(teacher.post(path + '/close').status_code, 200)
+
+    def test_adjudicated_07_healthz_requires_every_table(self):
         from sqlalchemy import create_engine as make_engine
         empty_path = os.path.join(tempfile.gettempdir(), f'pg_empty_{uuid.uuid4().hex[:8]}.db')
         empty_engine = make_engine('sqlite:///' + empty_path.replace('\\', '/'))
         client = TestClient(app, raise_server_exceptions=False)
         try:
+            Base.metadata.create_all(empty_engine, tables=[User.__table__, Assignment.__table__])
             with patch('app.engine', empty_engine):
-                try:
-                    status = client.get('/healthz').status_code
-                except Exception:
-                    status = 500  # 未捕获异常同样视为不健康
-            self.assertNotEqual(status, 200, '缺表时 healthz 不应报告健康')
+                self.assertEqual(client.get('/healthz').status_code, 503)
+                Base.metadata.create_all(empty_engine)
+                self.assertEqual(client.get('/healthz').status_code, 200)
         finally:
             empty_engine.dispose()
 
-    def test_adjudicated_08_concurrent_ai_checks_never_exceed_three_successes(self):
-        """方案 A：8 并发制造「额度检查时都看到 successes=0」的竞态窗口，回写 SUCCESS
-        前二次加锁复查必须把 SUCCESS 压在 3 条以内；超额 429 不得被 except Exception
-        吞成 503，也不得出现 500；主流程（提交正式评价）仍可用。"""
+    def test_adjudicated_08_concurrent_ai_checks_reserve_three_model_calls(self):
         aid = self.created()
         self.setup_submissions(aid)
         self.start_ok(aid)
@@ -1292,42 +1388,65 @@ class AdjudicatedFixTests(unittest.TestCase):
         url = f'/api/review-tasks/{task["id"]}/ai-check'
         body = self.body()
         token = self.c('s1').cookies.get('pg_session')
-        self.assertIsNotNone(token, '并发线程需复用 s1 的登录 cookie')
-        errors = []
+        reserved = threading.Event()
+        complete = threading.Event()
 
-        async def slow_result(*_args, **_kwargs):
-            # 让 8 个请求都停在外部模型阶段，尽量同时进入「回写 SUCCESS 前」的复查。
-            # 0.2s 远小于 SQLite BEGIN IMMEDIATE 的 5s 锁等待，避免制造假锁超时。
-            await asyncio.sleep(0.2)
+        async def slow_result(*_args):
+            if model.await_count >= 3:
+                reserved.set()
+            if not await asyncio.to_thread(complete.wait, 10):
+                raise TimeoutError()
             return ai_result('LOW', (0, 0, 0))
 
-        def fire(_index):
-            # 每个线程建独立 TestClient，避免共享 httpx client / cookie jar 的线程安全问题。
-            client = TestClient(app, raise_server_exceptions=False)
-            client.cookies.set('pg_session', token)
-            try:
-                return client.post(url, json=body).status_code
-            except Exception as exc:  # 未捕获异常等同 500，并保留现场证据
-                errors.append(f'{type(exc).__name__}: {exc}')
-                return 500
+        model = AsyncMock(side_effect=slow_result)
 
-        with patch.dict(os.environ, self.ai_env()), \
-             patch('app.evaluate_quality', new=AsyncMock(side_effect=slow_result)):
+        def fire(_index):
+            client = TestClient(app)
+            client.cookies.set('pg_session', token)
+            return client.post(url, json=body).status_code
+
+        with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=model):
             with ThreadPoolExecutor(max_workers=8) as pool:
                 futures = [pool.submit(fire, i) for i in range(8)]
+                try:
+                    self.assertTrue(reserved.wait(5))
+                    stats = self.dashboard(aid)
+                    self.assertEqual(stats['ai_call_count'], 3)
+                    self.assertEqual(stats['ai_running_count'], 3)
+                    self.assertEqual(stats['ai_failed_count'], 0)
+                    self.assertEqual(stats['ai_success_count'], 0)
+                finally:
+                    complete.set()
                 codes = [future.result() for future in futures]
-        self.assertNotIn(500, codes, f'并发下不得出现 500；codes={codes}; errors={errors}')
-        self.assertNotIn(503, codes, f'并发下不得把锁超时/异常降级为 503；codes={codes}; errors={errors}')
-        self.assertIn(200, codes, f'至少应有一次成功检测；codes={codes}')
-        self.assertIn(429, codes, f'超额请求应返回 429（而非 503/500）；codes={codes}')
-        with SessionLocal() as db:
-            checks = list(db.scalars(select(AICheck).where(AICheck.review_task_id == task['id'])))
-        successes = sum(check.status == 'SUCCESS' for check in checks)
-        self.assertLessEqual(
-            successes, 3,
-            f'并发竞态下 SUCCESS 不得超过 3 条；statuses={[c.status for c in checks]}; codes={codes}')
-        # 检测超额/失败不得影响主流程：正式评价仍可提交。
+        self.assertCountEqual(codes, [200] * 3 + [429] * 5)
+        self.assertEqual(model.await_count, 3)
+        stats = self.dashboard(aid)
+        self.assertEqual(stats['ai_running_count'], 0)
+        self.assertEqual(stats['ai_failed_count'], 0)
+        self.assertEqual(stats['ai_success_count'], 3)
         self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
+
+    def test_expired_model_reservations_release_success_slots_but_still_count_as_attempts(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
+        with SessionLocal.begin() as db:
+            db.add_all(AICheck(review_task_id=task['id'], input_hash='0' * 64, input_data={},
+                               status='RUNNING', result=None, created_at=now() - timedelta(minutes=1))
+                       for _ in range(8))
+        stats = self.dashboard(aid)
+        self.assertEqual(stats['ai_failed_count'], 8)
+        self.assertEqual(stats['ai_running_count'], 0)
+        self.assertFalse(self.detail('s1', task['id'])['ai_limit_reached'])
+        model = AsyncMock(return_value=ai_result())
+        with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=model):
+            self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 200)
+            self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 429)
+        self.assertEqual(model.await_count, 1)
+        self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_adjudicated_09_dashboard_single_ai_check_level_is_purified(self):
         """P1-6 补强：clean_ai_result(c) 已接入 records[].reviews[].ai_checks[].result。

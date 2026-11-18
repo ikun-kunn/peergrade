@@ -1,0 +1,86 @@
+name: PeerGrade verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'peergrade/**'
+      - '.github/workflows/peergrade.yml'
+  pull_request:
+    paths:
+      - 'peergrade/**'
+      - '.github/workflows/peergrade.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: peergrade
+
+jobs:
+  sqlite-and-frontend:
+    name: SQLite and Vue
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test and build Vue
+        working-directory: peergrade/frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Run SQLite regression and restore checks
+        run: |
+          python -m unittest discover -s tests -v
+          python -m tests.check_restore
+
+  postgres:
+    name: PostgreSQL 16 regression and restore
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: peergrade_test
+          POSTGRES_USER: peergrade_ci
+          POSTGRES_PASSWORD: peergrade_ci_only
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U peergrade_ci -d peergrade_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies and PostgreSQL clients
+        run: |
+          python -m pip install -r requirements.txt
+          sudo apt-get update -q
+          sudo apt-get install -y postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: Run PostgreSQL regression and restore checks
+        env:
+          PEERGRADE_TEST_POSTGRES_URL: postgresql+psycopg://peergrade_ci:peergrade_ci_only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/peergrade_test
+        run: |
+          python -m unittest discover -s tests -v
+          python -m tests.check_restore

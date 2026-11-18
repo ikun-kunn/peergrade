@@ -1,5 +1,4 @@
 import os
-import tempfile
 import unittest
 import asyncio
 import hashlib
@@ -8,10 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, AsyncMock
 from datetime import datetime, timedelta, timezone
 
-tmp = tempfile.TemporaryDirectory(dir=os.getcwd(), ignore_cleanup_errors=True)
-os.environ['DATABASE_URL'] = 'sqlite:///' + os.path.join(tmp.name, 'test.db').replace('\\', '/')
+from tests.isolated_database import configure_test_database
+
+configure_test_database()
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text, event
+from sqlalchemy import select, event
 from sqlalchemy.exc import IntegrityError
 from app import app, engine, SessionLocal, password_hash
 from models import Base, User, Session, Assignment, ReviewTask, Submission, ReviewDraft
@@ -52,7 +52,11 @@ class APITests(unittest.TestCase):
         empty = fitz.open(); empty.new_page(); empty_pdf = empty.tobytes(); empty.close()
         self.assertEqual(upload(student, empty_pdf).status_code, 422)
         self.assertEqual(upload(student, pdf).status_code, 200)
-        self.assertIn('text based PDF', student.get(f'/api/assignments/{aid}').json()['my_submission']['content_text'])
+        saved = student.get(f'/api/assignments/{aid}').json()['my_submission']
+        self.assertEqual(saved['content_type'], 'PDF')
+        self.assertIn('text based PDF', saved['content_text'])
+        self.assertEqual(upload(student, b'not a pdf').status_code, 422)
+        self.assertEqual(student.get(f'/api/assignments/{aid}').json()['my_submission'], saved)
         with SessionLocal() as db:
             item = db.get(Assignment, aid)
             item.submit_deadline = now - timedelta(hours=2)
@@ -209,9 +213,7 @@ class APITests(unittest.TestCase):
                 self.assertEqual(client.post('/api/auth/login', json={'username':'unknown-limit-test','password':'wrong'}).status_code, 401)
             self.assertEqual(client.post('/api/auth/login', json={'username':'unknown-limit-test','password':'wrong'}).status_code, 429)
 
-    def test_sqlite_enforces_foreign_keys(self):
-        with engine.connect() as connection:
-            self.assertEqual(connection.execute(text('PRAGMA foreign_keys')).scalar(), 1)
+    def test_database_enforces_foreign_keys(self):
         with SessionLocal() as db:
             db.add(Submission(assignment_id='missing', student_id=self.ids['s1'], content_type='TEXT',
                               content_text='invalid', content_hash=content_hash('invalid')))

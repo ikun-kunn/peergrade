@@ -44,8 +44,7 @@ services:
         condition: service_healthy
       init:
         condition: service_completed_successfully
-    # /healthz 会探测 users/assignments 关键表：web 未就绪或建表失败时返回 503，
-    # 让 proxy 等待 healthy 后再接流量，消除冷启动窗口的 502。
+    # 等待应用所需表建齐后再启动代理。
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()"]
       interval: 5s

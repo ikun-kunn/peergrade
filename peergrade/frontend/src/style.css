@@ -57,6 +57,37 @@ label small,.inline-meta,.card-bottom,.task-main small{color:#6d8173}
 .link-button:hover{color:var(--pg-green-dark)}
 .link-button:focus-visible{outline:2px solid var(--pg-focus);outline-offset:3px;border-radius:3px}
 
+.deadline-form{border-top:1px solid var(--pg-line);margin-top:20px;padding-top:10px}
+.deadline-form input{min-width:0}
+.submission-preview{max-height:24rem;overflow:auto;background:#f7faf6;border-radius:8px;padding:16px}
+.submission-preview:focus-visible{outline:2px solid var(--pg-focus);outline-offset:2px}
+.unsent-draft{margin-top:16px;font-size:13px}
+.unsent-draft summary{cursor:pointer;color:var(--pg-focus)}
+.submission-roster{margin:0;padding:0;list-style:none}
+.submission-roster li{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--pg-line);padding:10px 0;font-size:13px;overflow-wrap:anywhere}
+.submission-roster small{color:#6d8173;margin-left:6px}
+.evidence .evidence-jump{width:auto;height:auto;max-width:100%;text-align:left;color:var(--pg-focus);font-size:inherit;line-height:1.6;white-space:pre-wrap}
+.source-text mark.focused-evidence{background:#f5dda0;outline:1px solid #815a18}
+
+/* Let cards and form controls shrink even when user-supplied text has no spaces. */
+.page-heading > div,
+.task-main,
+.review-layout > *,
+.feedback-grid > *,
+.review-form fieldset {
+  min-width: 0;
+}
+.page-heading,
+.task-main,
+.rubrics span,
+.score-list label > span,
+.overview > div {
+  overflow-wrap: anywhere;
+}
+.review-actions {
+  flex-wrap: wrap;
+}
+
 /* 响应式补充：让窄屏下的表单、评分与操作区不拥挤 */
 @media(max-width:700px){
   .page-heading.compact{flex-wrap:wrap;gap:12px}
@@ -68,6 +99,7 @@ label small,.inline-meta,.card-bottom,.task-main small{color:#6d8173}
   .toast{margin-bottom:16px}
   .readonly-banner{font-size:12px}
   .form-panel{padding:4px 18px}
+  .evidence .evidence-jump{width:100%;min-height:44px}
 }
 @media(max-width:430px){
   .student-grid{grid-template-columns:1fr}

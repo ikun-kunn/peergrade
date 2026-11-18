@@ -11,21 +11,30 @@ from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import create_engine, select, func, text as sql_text, delete, event
+from sqlalchemy import create_engine, select, func, text as sql_text, delete, event, inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from domain import (allocate, content_hash, feedback_summary, quality_level, score_review,
                     validate_ai_result, validate_anchors)
-from ai_service import evaluate_quality
+from ai_service import MODEL_TIMEOUT_SECONDS, evaluate_quality
 from models import Base, User, Session, Assignment, Member, Submission, ReviewTask, ReviewDraft, Review, AICheck, RateBucket
 
 MAX_SUBMISSION_CHARS = 10000
 # TRD 3.2 同时允许「最多 10 页 PDF」与「文本 10000 字符」，10 页文字型 PDF 的提取量必然
 # 超过 10000（QA 实测 13509 字符）。在线输入仍限 10000，PDF 提取文本单独放宽到 30000。
 MAX_PDF_CHARS = 30000
+MIN_REVIEW_SUBMISSIONS = 3
+AI_SUCCESS_LIMIT = 3
+AI_ATTEMPT_LIMIT = 9
+# Give a bounded request time to save its result. Interrupted workers release
+# their success slot after this interval, while the reserved attempt still counts.
+AI_RESERVATION_TTL = timedelta(seconds=2 * MODEL_TIMEOUT_SECONDS)
 
 
 def canonical_origin(value):
@@ -86,13 +95,12 @@ if (frontend_dist / 'assets').is_dir():
 
 @app.get('/healthz', include_in_schema=False)
 def healthz():
-    # 只做 SELECT 1 无法发现「数据库在、业务表没建」的假绿；额外轻量探测关键表。
     try:
         with engine.connect() as connection:
-            connection.execute(sql_text('SELECT 1'))
-            connection.execute(sql_text('SELECT 1 FROM users LIMIT 1'))
-            connection.execute(sql_text('SELECT 1 FROM assignments LIMIT 1'))
+            ready = set(Base.metadata.tables).issubset(inspect(connection).get_table_names())
     except Exception:
+        ready = False
+    if not ready:
         fail(503, '数据库未就绪，请先执行 python manage.py init-db')
     return {'status': 'ok'}
 
@@ -144,17 +152,13 @@ def verify_password(password, encoded):
 DUMMY_PASSWORD_HASH = 'pbkdf2_sha256$600000$00000000000000000000000000000000$' + '0' * 64
 
 
-def enforce_login_limit(client_ip, username):
+def enforce_rate_limit(buckets, message):
     """Atomic database-backed fixed-window limits shared across worker processes."""
     window = int(datetime.now(timezone.utc).timestamp() // 60)
-    # Avoid storing usernames and addresses as plaintext in the rate-limit table.
-    # 反向代理下同一出口 IP 会承载全部演示账号，IP 阈值过低会把限流退化成全局锁；
-    # 真实客户端 IP 的信任链由部署层配置，这里只做应用层兜底（账号维度仍为 10/min）。
-    keys = [(hashlib.sha256(('ip:' + client_ip).encode()).hexdigest(), 120),
-            (hashlib.sha256(('account:' + username.casefold()).encode()).hexdigest(), 10)]
     with SessionLocal.begin() as db:
         blocked = False
-        for key, limit in keys:
+        for bucket, limit in buckets:
+            key = hashlib.sha256(bucket.encode()).hexdigest()
             count = db.execute(sql_text('INSERT INTO rate_buckets (key, window, count) VALUES (:key, :window, 1) '
                 'ON CONFLICT (key, window) DO UPDATE SET count = rate_buckets.count + 1 RETURNING count'),
                 {'key': key, 'window': window}).scalar_one()
@@ -163,7 +167,7 @@ def enforce_login_limit(client_ip, username):
         if secrets.randbelow(100) == 0:
             db.execute(delete(RateBucket).where(RateBucket.window < window - 5))
     if blocked:
-        fail(429, '登录尝试过多，请稍后重试')
+        fail(429, message)
 
 
 def lock_assignment(db, assignment_id):
@@ -224,10 +228,64 @@ class Login(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class Registration(Login):
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=12, max_length=256)
+    password_confirmation: str = Field(min_length=12, max_length=256)
+
+    @field_validator('username', 'display_name', mode='before')
+    @classmethod
+    def trim_identity(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator('username', 'display_name', 'password', 'password_confirmation')
+    @classmethod
+    def valid_unicode(cls, value):
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError('包含无效的 Unicode 字符')
+        return value
+
+    @field_validator('username', 'display_name')
+    @classmethod
+    def valid_identity(cls, value):
+        if '\x00' in value:
+            raise ValueError('名称包含无效字符')
+        return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    if request.url.path.rstrip('/') == '/api/auth/register':
+        # FastAPI 的默认错误体可能回显整个请求或密码字段。
+        return JSONResponse(status_code=422, content={'detail': '请检查注册字段：名称为 1–100 字符，密码为 12–256 字符'})
+    return await request_validation_exception_handler(request, exc)
+
+
+@app.post('/api/auth/register', status_code=201)
+def register(data: Registration, db: DB, request: Request):
+    client_ip = request.client.host if request.client else 'unknown'
+    enforce_rate_limit([('register:ip:' + client_ip, 20)], '注册尝试过多，请稍后重试')
+    if data.password != data.password_confirmation:
+        fail(422, '两次输入的密码不一致')
+    user = User(username=data.username, display_name=data.display_name,
+                password_hash=password_hash(data.password), role='STUDENT')
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if db.scalar(select(User.id).where(User.username == data.username)) is not None:
+            fail(409, '该用户名已被使用')
+        raise
+    return me(user)
+
+
 @app.post('/api/auth/login')
 def login(data: Login, response: Response, db: DB, request: Request):
     username = data.username.strip()
-    enforce_login_limit(request.client.host if request.client else 'unknown', username)
+    client_ip = request.client.host if request.client else 'unknown'
+    enforce_rate_limit([('ip:' + client_ip, 120), ('account:' + username.casefold(), 10)],
+                       '登录尝试过多，请稍后重试')
     user = db.scalar(select(User).where(User.username == username))
     verified = verify_password(data.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
     if not user or not verified:
@@ -272,18 +330,46 @@ def accessible_assignment(db, actor, assignment_id):
     return item
 
 
-def assignment_json(item):
+def assignment_phase(item, now, has_pending):
+    if item.status == 'CLOSED':
+        return 'CLOSED'
+    if item.status == 'REVIEWING':
+        return 'READY_TO_PUBLISH' if now >= utc(item.review_deadline) or not has_pending else 'REVIEWING'
+    if now >= utc(item.review_deadline):
+        return 'REVIEW_NOT_STARTED'
+    return 'SUBMISSION_ENDED' if now >= utc(item.submit_deadline) else 'SUBMITTING'
+
+
+def assignment_json(item, now, has_pending=False):
     return {'id': item.id, 'title': item.title, 'description': item.description, 'rubric': item.rubric,
-            'status': item.status, 'submit_deadline': utc(item.submit_deadline).isoformat(),
+            'status': item.status, 'phase': assignment_phase(item, now, has_pending),
+            'submit_deadline': utc(item.submit_deadline).isoformat(),
             'review_deadline': utc(item.review_deadline).isoformat()}
 
 
-class AssignmentInput(Input):
+def review_exists(assignment_id, *, pending=False):
+    query = select(ReviewTask.id).where(ReviewTask.assignment_id == assignment_id)
+    if pending:
+        query = query.where(ReviewTask.status == 'PENDING')
+    return query.exists()
+
+
+class DeadlineInput(Input):
+    submit_deadline: datetime
+    review_deadline: datetime
+
+    @field_validator('submit_deadline', 'review_deadline')
+    @classmethod
+    def normalize_deadline(cls, value):
+        if value.utcoffset() is None:
+            raise ValueError('截止时间必须包含时区')
+        return utc(value)
+
+
+class AssignmentInput(DeadlineInput):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=10000)
     rubric: list[str] = Field(min_length=3, max_length=3)
-    submit_deadline: datetime
-    review_deadline: datetime
     student_ids: list[str] = Field(min_length=3, max_length=500)
 
     @field_validator('rubric')
@@ -306,8 +392,6 @@ def students(db: DB, actor: Actor):
 def create_assignment(data: AssignmentInput, db: DB, actor: Actor):
     if actor.role != 'TEACHER':
         fail(403, '仅教师可创建任务')
-    if data.submit_deadline.tzinfo is None or data.review_deadline.tzinfo is None:
-        fail(422, '截止时间必须包含时区')
     if data.submit_deadline <= datetime.now(timezone.utc) or data.review_deadline <= data.submit_deadline:
         fail(422, '请检查提交和互评截止时间')
     ids = set(data.student_ids)
@@ -322,25 +406,71 @@ def create_assignment(data: AssignmentInput, db: DB, actor: Actor):
     db.flush()
     db.add_all([Member(assignment_id=item.id, student_id=i) for i in ids])
     db.commit()
-    return assignment_json(item)
+    return assignment_json(item, datetime.now(timezone.utc))
 
 
 @app.get('/api/assignments')
 def assignments(db: DB, actor: Actor):
+    pending = review_exists(Assignment.id, pending=True)
+    stmt = select(Assignment, pending)
     if actor.role == 'TEACHER':
-        stmt = select(Assignment).where(Assignment.teacher_id == actor.id)
+        stmt = stmt.where(Assignment.teacher_id == actor.id)
     else:
-        stmt = select(Assignment).join(Member, Member.assignment_id == Assignment.id).where(Member.student_id == actor.id)
-    return [assignment_json(x) for x in db.scalars(stmt.order_by(Assignment.created_at.desc()))]
+        submitted = select(Submission.id).where(Submission.assignment_id == Assignment.id, Submission.student_id == actor.id)
+        stmt = stmt.add_columns(submitted.exists()).join(Member, Member.assignment_id == Assignment.id).where(Member.student_id == actor.id)
+    now = datetime.now(timezone.utc)
+    result = []
+    for item, has_pending, *student_fields in db.execute(stmt.order_by(Assignment.created_at.desc())):
+        row = assignment_json(item, now, has_pending)
+        if student_fields:
+            row['has_submission'] = student_fields[0]
+        result.append(row)
+    return result
+
+
+def teacher_assignment_detail(db, item, now):
+    has_reviews, has_pending = db.execute(select(review_exists(item.id), review_exists(item.id, pending=True))).one()
+    result = assignment_json(item, now, has_pending)
+    submission_count = db.scalar(select(func.count()).select_from(Submission).where(Submission.assignment_id == item.id))
+    member_count = db.scalar(select(func.count()).select_from(Member).where(Member.assignment_id == item.id))
+    phase = result['phase']
+    actions = []
+    if phase in {'SUBMITTING', 'SUBMISSION_ENDED'} and not has_reviews:
+        actions.append('extend_deadlines')
+        if phase == 'SUBMISSION_ENDED' and submission_count >= MIN_REVIEW_SUBMISSIONS:
+            actions.append('start_review')
+    if phase in {'READY_TO_PUBLISH', 'REVIEW_NOT_STARTED'}:
+        actions.append('close')
+    return {**result, 'submission_count': submission_count, 'member_count': member_count,
+            'minimum_submission_count': MIN_REVIEW_SUBMISSIONS, 'available_actions': actions,
+            'review_started': bool(item.allocation_seed or has_reviews)}
 
 
 @app.get('/api/assignments/{assignment_id}')
 def assignment_detail(assignment_id: str, db: DB, actor: Actor):
     item = accessible_assignment(db, actor, assignment_id)
-    result = assignment_json(item)
-    if actor.role == 'STUDENT':
-        submission = db.scalar(select(Submission).where(Submission.assignment_id == item.id, Submission.student_id == actor.id))
-        result['my_submission'] = {'content_text': submission.content_text, 'content_type': submission.content_type} if submission else None
+    now = datetime.now(timezone.utc)
+    if actor.role == 'TEACHER':
+        return teacher_assignment_detail(db, item, now)
+    has_reviews, has_pending = db.execute(select(review_exists(item.id), review_exists(item.id, pending=True))).one()
+    submission = db.scalar(select(Submission).where(Submission.assignment_id == item.id, Submission.student_id == actor.id))
+    return {**assignment_json(item, now, has_pending), 'review_started': bool(item.allocation_seed or has_reviews),
+            'my_submission': {'content_text': submission.content_text, 'content_type': submission.content_type} if submission else None}
+
+
+@app.patch('/api/assignments/{assignment_id}/deadlines')
+def extend_deadlines(assignment_id: str, data: DeadlineInput, db: DB, actor: Actor):
+    item = owned_assignment(db, actor, assignment_id, lock=True)
+    now = datetime.now(timezone.utc)
+    if item.status != 'SUBMITTING' or now >= utc(item.review_deadline) or db.scalar(select(review_exists(item.id))):
+        fail(409, '任务已开启互评或互评窗口已过，不能延长截止时间')
+    if data.submit_deadline <= max(utc(item.submit_deadline), now):
+        fail(422, '新提交截止时间必须晚于原提交截止时间和当前时间')
+    if data.review_deadline < utc(item.review_deadline) or data.review_deadline <= data.submit_deadline:
+        fail(422, '新互评截止时间不得早于原互评截止时间，并且必须晚于新提交截止时间')
+    item.submit_deadline, item.review_deadline = data.submit_deadline, data.review_deadline
+    result = teacher_assignment_detail(db, item, now)
+    db.commit()
     return result
 
 
@@ -412,14 +542,17 @@ def start_review(assignment_id: str, db: DB, actor: Actor):
         return {'status': item.status, 'created': False}
     if item.status != 'SUBMITTING':
         fail(409, '任务已结束')
-    if datetime.now(timezone.utc) < utc(item.submit_deadline):
-        fail(409, '提交截止后才能开始互评')
-    if datetime.now(timezone.utc) >= utc(item.review_deadline):
+    now = datetime.now(timezone.utc)
+    if now >= utc(item.review_deadline):
         fail(409, '互评截止时间已过，无法开始互评')
+    if now < utc(item.submit_deadline):
+        fail(409, '提交截止后才能开始互评')
+    if db.scalar(select(review_exists(item.id))):
+        fail(409, '任务已存在互评分配')
     # A stable input order is necessary to reproduce a stored random seed.
     submissions = list(db.scalars(select(Submission).where(Submission.assignment_id == item.id).order_by(Submission.student_id)))
     by_owner = {x.student_id: x for x in submissions}
-    if len(by_owner) < 3:
+    if len(by_owner) < MIN_REVIEW_SUBMISSIONS:
         fail(409, '至少需要三名学生提交作业')
     seed = secrets.randbits(128)
     pairs = allocate(list(by_owner), seed)
@@ -435,18 +568,12 @@ def close_assignment(assignment_id: str, db: DB, actor: Actor):
     item = owned_assignment(db, actor, assignment_id, lock=True)
     if item.status == 'CLOSED':
         return {'status': item.status}
-    # 逃生口：任务仍停在 SUBMITTING 且互评截止已过时，start_review 会因截止拒绝，
-    # 原 REVIEWING 前置条件又会让 close 拒绝，任务将永久卡死。TRD 2.2 允许
-    # 「截止时间到达后由教师手动结束」，故此处直接结案；未过期的 SUBMITTING 仍按原语义 409。
-    if item.status == 'SUBMITTING' and datetime.now(timezone.utc) >= utc(item.review_deadline):
-        item.status = 'CLOSED'
-        db.commit()
-        return {'status': item.status}
-    if item.status != 'REVIEWING':
-        fail(409, '互评开始后才能结束')
-    pending = db.scalar(select(func.count()).select_from(ReviewTask).where(ReviewTask.assignment_id == item.id, ReviewTask.status == 'PENDING'))
-    if pending and datetime.now(timezone.utc) < utc(item.review_deadline):
+    has_pending = item.status == 'REVIEWING' and db.scalar(select(review_exists(item.id, pending=True)))
+    phase = assignment_phase(item, datetime.now(timezone.utc), has_pending)
+    if phase == 'REVIEWING':
         fail(409, '互评全部完成或截止后才能结束')
+    if phase not in {'REVIEW_NOT_STARTED', 'READY_TO_PUBLISH'}:
+        fail(409, '互评开始后才能结束')
     item.status = 'CLOSED'
     db.commit()
     return {'status': item.status}
@@ -459,14 +586,41 @@ def own_task(db, actor, task_id):
     return task
 
 
+def review_is_writable(task, item, now):
+    return item.status == 'REVIEWING' and task.status == 'PENDING' and now < utc(item.review_deadline)
+
+
+def review_task_state(task, item, now):
+    can_write = review_is_writable(task, item, now)
+    phase = 'PENDING' if can_write else 'COMPLETED' if task.status == 'COMPLETED' else 'REVIEW_EXPIRED'
+    return {'status': task.status, 'phase': phase, 'can_write': can_write,
+            'review_deadline': utc(item.review_deadline).isoformat()}
+
+
 @app.get('/api/review-tasks')
 def review_tasks(db: DB, actor: Actor):
     if actor.role != 'STUDENT':
         fail(403, '仅学生可查看互评任务')
-    tasks = db.execute(select(ReviewTask, Assignment.title).join(Assignment, Assignment.id == ReviewTask.assignment_id)
+    tasks = db.execute(select(ReviewTask, Assignment).join(Assignment, Assignment.id == ReviewTask.assignment_id)
                        .where(ReviewTask.reviewer_id == actor.id))
-    return [{'id': t.id, 'assignment_id': t.assignment_id, 'assignment_title': title,
-             'anonymous_code': t.submission_id[:8].upper(), 'status': t.status} for t, title in tasks]
+    now = datetime.now(timezone.utc)
+    return [{'id': task.id, 'assignment_id': item.id, 'assignment_title': item.title,
+             'anonymous_code': task.submission_id[:8].upper(), **review_task_state(task, item, now)}
+            for task, item in tasks]
+
+
+def ai_usage(db, task_id, now):
+    return db.execute(
+        select(func.count(), func.count().filter(AICheck.status == 'SUCCESS'),
+               func.count().filter(AICheck.status == 'RUNNING', AICheck.created_at > now - AI_RESERVATION_TTL))
+        .select_from(AICheck).where(AICheck.review_task_id == task_id)
+    ).one()
+
+
+def ai_attempt_status(check, now):
+    if check.status == 'RUNNING' and utc(check.created_at) <= now - AI_RESERVATION_TTL:
+        return 'FAILED'
+    return check.status
 
 
 @app.get('/api/review-tasks/{task_id}')
@@ -475,8 +629,12 @@ def review_task(task_id: str, db: DB, actor: Actor):
     item, submission = db.get(Assignment, task.assignment_id), db.get(Submission, task.submission_id)
     review = db.scalar(select(Review).where(Review.review_task_id == task.id))
     draft = db.scalar(select(ReviewDraft).where(ReviewDraft.review_task_id == task.id))
-    return {'id': task.id, 'assignment': assignment_json(item), 'status': task.status,
+    has_pending = db.scalar(select(review_exists(item.id, pending=True)))
+    now = datetime.now(timezone.utc)
+    attempts, successes, _ = ai_usage(db, task.id, now)
+    return {'id': task.id, 'assignment': assignment_json(item, now, has_pending), **review_task_state(task, item, now),
             'anonymous_code': submission.id[:8].upper(), 'content_text': submission.content_text,
+            'ai_limit_reached': attempts >= AI_ATTEMPT_LIMIT or successes >= AI_SUCCESS_LIMIT,
             'content_hash': submission.content_hash,
             'review': review_json(review) if review else None, 'draft': draft.content if draft and not review else None}
 
@@ -517,7 +675,7 @@ def save_draft(task_id: str, data: DraftInput, db: DB, actor: Actor):
     task = own_task(db, actor, task_id)
     item = lock_assignment(db, task.assignment_id)
     db.refresh(task)
-    if item.status != 'REVIEWING' or task.status != 'PENDING' or datetime.now(timezone.utc) >= utc(item.review_deadline):
+    if not review_is_writable(task, item, datetime.now(timezone.utc)):
         fail(409, '互评已提交或已结束，不能保存草稿')
     submission = db.get(Submission, task.submission_id)
     content = data.model_dump()
@@ -551,7 +709,7 @@ def submit_review(task_id: str, data: ReviewInput, db: DB, actor: Actor):
         if existing and (existing.scores, existing.strengths, existing.weaknesses, existing.suggestions, existing.evidence_anchors) == (data.scores, data.strengths, data.weaknesses, data.suggestions, anchors):
             return review_json(existing)
         fail(409, '评价已提交，不能修改')
-    if item.status != 'REVIEWING' or datetime.now(timezone.utc) >= utc(item.review_deadline):
+    if not review_is_writable(task, item, datetime.now(timezone.utc)):
         fail(409, '互评阶段已结束')
     submission = db.get(Submission, task.submission_id)
     try:
@@ -575,18 +733,14 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
     task = own_task(db, actor, task_id)
     item = lock_assignment(db, task.assignment_id)
     db.refresh(task)
-    if item.status != 'REVIEWING' or task.status != 'PENDING' or datetime.now(timezone.utc) >= utc(item.review_deadline):
+    now = datetime.now(timezone.utc)
+    if not review_is_writable(task, item, now):
         fail(409, '当前不能检测该评价')
-    # 只把 SUCCESS 计入「单条互评最多 3 次检测」，失败尝试不吃额度；另用 9 次总尝试
-    # 硬上限防止外部模型持续失败时被无限刷。配置检查放在权限/状态/额度之后，避免
-    # 未配置 AI 时把非评审者（应 404）或已结束任务（应 409）误报成 503。
-    attempts = db.scalar(select(func.count()).select_from(AICheck).where(AICheck.review_task_id == task.id))
-    successes = db.scalar(select(func.count()).select_from(AICheck)
-                          .where(AICheck.review_task_id == task.id, AICheck.status == 'SUCCESS'))
-    if successes >= 3:
-        fail(429, '该互评已达到三次检测上限')
-    if attempts >= 9:
-        fail(429, '检测尝试次数过多，请稍后再试，您仍可直接提交评价')
+    attempts, successes, running = ai_usage(db, task.id, now)
+    if successes >= AI_SUCCESS_LIMIT or attempts >= AI_ATTEMPT_LIMIT:
+        fail(429, '该互评的 AI 检测额度已用完，仍可直接提交评价')
+    if successes + running >= AI_SUCCESS_LIMIT:
+        fail(429, '已有检测正在处理，请等待结果，也可以直接提交评价')
     key, url, model = os.getenv('AI_API_KEY'), os.getenv('AI_API_URL'), os.getenv('AI_MODEL')
     if not all((key, url, model)):
         fail(503, 'AI 检测暂不可用，您仍可直接提交评价')
@@ -596,39 +750,39 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
         validate_anchors(submission.content_text, anchors)
     except ValueError as exc:
         fail(422, str(exc))
-    # Include surrounding original text even when the anchor lies past the first 4000 characters.
-    excerpts = [submission.content_text[max(0, a['start']-300):min(len(submission.content_text), a['end']+300)] for a in anchors]
+    # Merge overlapping contexts without repeating source text in the excerpt.
+    spans = sorted((max(0, a['start'] - 300), min(len(submission.content_text), a['end'] + 300)) for a in anchors)
+    merged = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    excerpts = [submission.content_text[start:end] for start, end in merged]
     payload = {'assignment_rubric': item.rubric, 'submission_excerpt': ('\n…\n'.join(excerpts) if excerpts else submission.content_text[:4000])[:6000],
                'evidence_quotes': [a['quote'] for a in anchors],
                'review': {'strengths': data.strengths, 'weaknesses': data.weaknesses, 'suggestions': data.suggestions}}
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     check = AICheck(review_task_id=task.id, input_hash=hashlib.sha256(raw.encode()).hexdigest(),
-                    input_data=payload, status='FAILED', result=None)
+                    input_data={**payload, 'evidence_anchors': anchors}, status='RUNNING', result=None,
+                    created_at=now)
     db.add(check)
-    db.commit()  # Reserve an attempt before contacting the external service.
+    db.commit()  # Release the assignment lock before calling the model.
     try:
-        result = await evaluate_quality(url, key, model, raw)
-        # 服务端再次校验并重算等级、剥离多余字段，绝不采信模型自称的 quality_level。
-        result = validate_ai_result(result)
-        # 预留行 commit 时已释放行锁；并发请求可能在额度检查时都看到 successes=0。
-        # 回写 SUCCESS 前重新取同一 assignment 行锁并二次校验，保证最多 3 条 SUCCESS。
-        lock_assignment(db, task.assignment_id)
-        db.refresh(check)
-        existing = db.scalar(select(func.count()).select_from(AICheck)
-                             .where(AICheck.review_task_id == task.id, AICheck.status == 'SUCCESS'))
-        if existing >= 3:
-            # 超额：预留行保持 FAILED（计入总尝试数 / ai_failed_count），先提交释放锁再返回 429。
-            db.commit()
-            fail(429, '该互评已达到三次检测上限')
-        check.status, check.result = 'SUCCESS', result
-        db.commit()
-        return result
-    except HTTPException:
-        raise
-    # 外部模型调用与其返回值都不可信，任何异常都保留 FAILED 预留记录并统一降级为 503，
-    # 保证 AI 不可用时主流程仍可提交互评（含流式读取层、RuntimeError 等原本漏出的异常）。
+        result = validate_ai_result(await evaluate_quality(url, key, model, raw))
     except Exception:
+        result = None
+
+    lock_assignment(db, task.assignment_id)
+    db.refresh(check)
+    # An expired request cannot publish a result after its slot has been reused.
+    if ai_attempt_status(check, datetime.now(timezone.utc)) != 'RUNNING':
+        result = None
+    check.status, check.result = ('SUCCESS' if result is not None else 'FAILED'), result
+    db.commit()
+    if result is None:
         fail(503, 'AI 检测失败或超时，您仍可直接提交评价')
+    return result
 
 
 @app.get('/api/assignments/{assignment_id}/my-feedback')
@@ -642,35 +796,39 @@ def my_feedback(assignment_id: str, db: DB, actor: Actor):
     if not submission:
         fail(404, '尚未提交作业')
     reviews = list(db.scalars(select(Review).join(ReviewTask, ReviewTask.id == Review.review_task_id)
-                              .where(ReviewTask.submission_id == submission.id).order_by(Review.submitted_at)))
+                              .where(ReviewTask.submission_id == submission.id).order_by(Review.submitted_at, Review.id)))
     try:
         summary = feedback_summary([r.scores for r in reviews])
     except (ValueError, TypeError):
         # 与 dashboard 保持一致：历史脏库出现超过两条评价或非法分数时不应让反馈页 500。
         summary = feedback_summary([])
-    return {'summary': summary,
+    return {'summary': summary, 'rubric': item.rubric,
+            'review_started': bool(item.allocation_seed or db.scalar(select(review_exists(item.id)))),
             'reviews': [review_json(r) for r in reviews], 'content_text': submission.content_text}
 
 
 @app.get('/api/assignments/{assignment_id}/dashboard')
 def dashboard(assignment_id: str, db: DB, actor: Actor):
     item = owned_assignment(db, actor, assignment_id)
-    members = db.scalar(select(func.count()).select_from(Member).where(Member.assignment_id == item.id))
+    members = list(db.scalars(select(User).join(Member, Member.student_id == User.id)
+                              .where(Member.assignment_id == item.id).order_by(User.username)))
     submissions = list(db.scalars(select(Submission).where(Submission.assignment_id == item.id)))
     tasks = list(db.scalars(select(ReviewTask).where(ReviewTask.assignment_id == item.id)))
+    now = datetime.now(timezone.utc)
     reviews = list(db.scalars(select(Review).join(ReviewTask, Review.review_task_id == ReviewTask.id)
                               .where(ReviewTask.assignment_id == item.id)))
     checks = list(db.scalars(select(AICheck).join(ReviewTask, AICheck.review_task_id == ReviewTask.id)
-                             .where(ReviewTask.assignment_id == item.id)))
+                             .where(ReviewTask.assignment_id == item.id).order_by(AICheck.created_at, AICheck.id)))
+    check_statuses = {check.id: ai_attempt_status(check, now) for check in checks}
     by_task = {r.review_task_id: r for r in reviews}
     tasks_by_submission = defaultdict(list)
     checks_by_task = defaultdict(list)
     for task in tasks:
         tasks_by_submission[task.submission_id].append(task)
-    for check in sorted(checks, key=lambda c: utc(c.created_at)):
+    for check in checks:
         checks_by_task[check.review_task_id].append(check)
-    user_ids = {s.student_id for s in submissions} | {t.reviewer_id for t in tasks}
-    users = {u.id: u.display_name for u in db.scalars(select(User).where(User.id.in_(user_ids)))} if user_ids else {}
+    users = {user.id: user.display_name for user in members}
+    submitted_ids = {submission.student_id for submission in submissions}
     # TRD 4.3：等级一律由服务端用三个维度分数重算，不读库里可能被模型/历史数据污染的
     # quality_level；result 缺失、维度缺失或非 0–2 整数时返回 None（跳过该条）。
     def recomputed_level(check):
@@ -702,18 +860,18 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
         # 用户被清理或外键未启用的历史库里可能查不到姓名，用占位符代替 KeyError。
         records.append({'submission_id': submission.id, 'student_name': users.get(submission.student_id, '未知用户'),
                         'content_text': submission.content_text, 'summary': summary,
-                        'reviews': [{'reviewer_name': users.get(t.reviewer_id, '未知用户'),
-                                     'status': t.status, 'review': review_json(by_task[t.id]) if t.id in by_task else None,
+                        'reviews': [{'id': t.id, 'reviewer_name': users.get(t.reviewer_id, '未知用户'),
+                                     **review_task_state(t, item, now), 'review': review_json(by_task[t.id]) if t.id in by_task else None,
                         # 单条 AI 结果也按三维分数重算 quality_level，与 ai_levels 统计口径一致；
                         # 无法重算（result 非 dict / 维度缺失）时 clean_ai_result 原样返回，不改 input_data。
-                        'ai_checks': [{'status': c.status, 'result': clean_ai_result(c), 'input_data': c.input_data,
+                        'ai_checks': [{'status': check_statuses[c.id], 'result': clean_ai_result(c), 'input_data': c.input_data,
                                        'created_at': utc(c.created_at).isoformat()} for c in checks_by_task[t.id]]}
                                     for t in related]})
     # Only attribute a check to the final review if its draft and evidence still match.
     latest_checks = {}
     successful_by_task = {}
-    for check in sorted(checks, key=lambda c: utc(c.created_at)):
-        if check.status != 'SUCCESS':
+    for check in checks:
+        if check.status != 'SUCCESS' or recomputed_level(check) is None:
             continue
         successful_by_task.setdefault(check.review_task_id, []).append(check)
         review = by_task.get(check.review_task_id)
@@ -725,7 +883,9 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
         anchors = review.evidence_anchors if isinstance(review.evidence_anchors, list) else []
         quotes = [a.get('quote') for a in anchors if isinstance(a, dict)]
         current = {'strengths': review.strengths, 'weaknesses': review.weaknesses, 'suggestions': review.suggestions}
-        if payload.get('review') == current and payload.get('evidence_quotes') == quotes:
+        evidence_matches = (payload['evidence_anchors'] == anchors if 'evidence_anchors' in payload
+                            else payload.get('evidence_quotes') == quotes)
+        if payload.get('review') == current and evidence_matches:
             latest_checks[check.review_task_id] = check
     # levels 复用上方定义的 recomputed_level（单条结果净化与统计口径完全一致），不重复定义。
     levels = {level: sum(recomputed_level(c) == level for c in latest_checks.values())
@@ -748,20 +908,19 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
         fr, lr = fp.get('review'), lp.get('review')
         if not isinstance(fr, dict) or not isinstance(lr, dict) or fr == lr:
             continue
-        if not isinstance(first.result, dict) or not isinstance(last.result, dict):
-            continue
-        try:
-            changes.append(sum(last.result[k] - first.result[k] for k in keys))
-        except (KeyError, TypeError):
-            continue
-    return {'assignment': assignment_json(item), 'allocation_seed': item.allocation_seed,
+        changes.append(sum(last.result[k] - first.result[k] for k in keys))
+    return {'assignment': assignment_json(item, now, any(t.status == 'PENDING' for t in tasks)), 'allocation_seed': item.allocation_seed,
             'allocation': [{'submission_id': t.submission_id, 'reviewer_id': t.reviewer_id} for t in tasks],
-            'member_count': members, 'submission_count': len(submissions),
+            'member_count': len(members), 'submission_count': len(submissions),
+            'submission_roster': [{'id': user.id, 'display_name': user.display_name, 'username': user.username,
+                                  'submitted': user.id in submitted_ids} for user in members],
             'review_count': len(reviews), 'review_task_count': len(tasks),
             'complete_average': sum(full_averages) / len(full_averages) if full_averages else None,
             'high_disagreement_count': sum(r['summary']['high_disagreement'] for r in records),
-            # ai_call_count 仍为总尝试数；ai_failed_count 供前端展示「成功 X 次 / 失败 Y 次」。
-            'ai_call_count': len(checks), 'ai_failed_count': sum(c.status != 'SUCCESS' for c in checks),
+            'ai_call_count': len(checks),
+            'ai_success_count': sum(status == 'SUCCESS' for status in check_statuses.values()),
+            'ai_running_count': sum(status == 'RUNNING' for status in check_statuses.values()),
+            'ai_failed_count': sum(status not in {'SUCCESS', 'RUNNING'} for status in check_statuses.values()),
             'ai_levels': levels, 'ai_issue_counts': issues,
             'ai_paired_count': len(changes), 'ai_paired_mean_change': sum(changes) / len(changes) if changes else None,
             'records': records}
