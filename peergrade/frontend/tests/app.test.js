@@ -101,13 +101,13 @@ async function render(t, routes, role = 'STUDENT') {
       addEventListener: (key, handler) => events.set(key, handler),
       removeEventListener: key => events.delete(key)
     },
-    window: { scrollTo() {}, getSelection: () => null },
+    window: { scrollTo() {}, getSelection: () => null, confirm: () => true },
     Document: class {},
     ShadowRoot: class {},
-    fetch: async path => {
+    fetch: async (path, options) => {
       assert.ok(Object.hasOwn(responses, path), 'Unexpected request ' + path)
       const route = responses[path]
-      const result = typeof route === 'function' ? route() : route
+      const result = typeof route === 'function' ? route(options) : route
       return result instanceof Response ? result : Response.json(result)
     }
   }
@@ -220,4 +220,96 @@ test('最后一份评价提交后，教师可在原页面看到发布入口', as
   detail = { ...detail, phase: 'READY_TO_PUBLISH', available_actions: ['close'] }
   await refresh()
   assert.ok(button(root, '发布反馈并结束任务'))
+})
+
+async function enter(node, value) {
+  node.value = value
+  node.events.get('input')({ target: node })
+  await nextTick()
+}
+
+async function submitForm(root) {
+  const form = descendants(root).find(el => el.tag === 'form')
+  assert.ok(form)
+  await form.props.onSubmit({ preventDefault() {} })
+  await nextTick()
+}
+
+test('学生注册校验确认密码，成功后返回登录并保留用户名', async t => {
+  let requests = 0
+  const { root } = await render(t, {
+    '/api/auth/me': Response.json({ detail: '未登录' }, { status: 401 }),
+    '/api/auth/register': options => {
+      requests++
+      assert.equal(options.method, 'POST')
+      assert.deepEqual(JSON.parse(options.body), { username: 'new_student', display_name: '新同学',
+        password: 'sample password', password_confirmation: 'sample password' })
+      return requests === 1 ? Response.json({ detail: '用户名已经存在' }, { status: 409 }) : { id: 'new', role: 'STUDENT' }
+    }
+  })
+  await click(button(root, '注册学生账号'))
+  const inputs = () => descendants(root).filter(el => el.tag === 'input')
+  for (const [index, value] of ['new_student', '新同学', 'sample password', 'different password'].entries()) {
+    await enter(inputs()[index], value)
+  }
+  await submitForm(root)
+  assert.match(renderedText(root), /两次输入的密码不一致/)
+  assert.equal(requests, 0)
+  await enter(inputs()[3], 'sample password')
+  await submitForm(root)
+  assert.match(renderedText(root), /用户名已经存在/)
+  assert.equal(inputs().length, 4)
+  await submitForm(root)
+  assert.equal(requests, 2)
+  assert.match(renderedText(root), /学生账号已注册，请登录/)
+  assert.equal(inputs().length, 2)
+  assert.equal(inputs()[0].value, 'new_student')
+  assert.equal(inputs()[1].value, '')
+})
+
+test('教师可以延期等待补交，以及结束未开启互评的过期任务', async t => {
+  let detail = { ...assignment, phase: 'SUBMISSION_ENDED', available_actions: ['extend_deadlines'],
+    member_count: 3, submission_count: 2, minimum_submission_count: 3, review_started: false }
+  const { root, refresh } = await render(t, {
+    '/api/assignments': () => [detail],
+    '/api/assignments/assignment-1': () => detail,
+    '/api/assignments/assignment-1/deadlines': options => {
+      assert.equal(options.method, 'PATCH')
+      const body = JSON.parse(options.body)
+      assert.equal(body.submit_deadline, new Date('2026-11-19T20:00').toISOString())
+      assert.equal(body.review_deadline, new Date('2026-11-20T20:00').toISOString())
+      detail = { ...detail, ...body, phase: 'SUBMITTING' }
+      return detail
+    },
+    '/api/assignments/assignment-1/close': () => {
+      detail = { ...detail, phase: 'CLOSED', available_actions: [] }
+      return { status: 'CLOSED' }
+    }
+  }, 'TEACHER')
+  await click(button(root, assignment.title))
+  assert.match(renderedText(root), /提交人数不足/)
+  assert.doesNotMatch(renderedText(root), /开启匿名互评/)
+  await click(button(root, '延长截止时间'))
+  const fields = descendants(root).filter(el => el.tag === 'input')
+  await enter(fields[0], '2026-11-19T20:00')
+  await enter(fields[1], '2026-11-20T20:00')
+  await submitForm(root)
+  assert.match(renderedText(root), /截止时间已更新/)
+  assert.ok(button(root, '延长截止时间'))
+  detail = { ...detail, phase: 'REVIEW_NOT_STARTED', available_actions: ['close'] }
+  await refresh()
+  assert.doesNotMatch(renderedText(root), /延长截止时间/)
+  await click(button(root, '结束任务'))
+  assert.match(renderedText(root), /任务已结束，本次未开展互评/)
+  assert.doesNotMatch(renderedText(root), /发布反馈并结束任务/)
+})
+
+test('已过期评价只保留历史入口，不再计入待完成数', async t => {
+  const expiredTask = { id: 'expired', assignment_title: '过期任务', phase: 'REVIEW_EXPIRED', can_write: false, anonymous_code: 'A1' }
+  const pendingTask = { id: 'pending', assignment_title: '进行中的任务', phase: 'PENDING', can_write: true, anonymous_code: 'A2' }
+  const { root } = await render(t, { '/api/review-tasks': [expiredTask, pendingTask] })
+  const overview = descendants(root).find(el => el.props.class === 'overview')
+  assert.match(renderedText(overview), /待完成互评1需要你关注的评价/)
+  assert.match(renderedText(button(root, '过期任务')), /评价已截止/)
+  assert.match(renderedText(button(root, '进行中的任务')), /待评价/)
 })

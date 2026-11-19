@@ -44,7 +44,8 @@ def restore_sqlite(source, scratch):
 
 
 def run_postgres_tool(executable, engine, service_path, *args):
-    _, settings = engine.dialect.create_connect_args(engine.url)
+    settings = engine.url.translate_connect_args(username='user', database='dbname')
+    settings.update(engine.url.query)
     settings.setdefault('connect_timeout', '5')
     # The private temporary service file keeps credentials out of command-line arguments.
     lines = ['[peergrade_restore]']

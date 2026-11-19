@@ -88,7 +88,10 @@ if engine.dialect.name == 'sqlite':
         cursor.close()
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 app = FastAPI(title='PeerGrade', docs_url='/api/docs', openapi_url='/api/openapi.json')
+# 优先使用 npm run build 的最新产物；发布平台排除 dist 时才使用 webroot 副本。
 frontend_dist = Path(__file__).parent / 'frontend' / 'dist'
+if not (frontend_dist / 'index.html').is_file():
+    frontend_dist = Path(__file__).parent / 'frontend' / 'webroot'
 if (frontend_dist / 'assets').is_dir():
     app.mount('/assets', StaticFiles(directory=frontend_dist / 'assets'), name='assets')
 
@@ -159,8 +162,8 @@ def enforce_rate_limit(buckets, message):
         blocked = False
         for bucket, limit in buckets:
             key = hashlib.sha256(bucket.encode()).hexdigest()
-            count = db.execute(sql_text('INSERT INTO rate_buckets (key, window, count) VALUES (:key, :window, 1) '
-                'ON CONFLICT (key, window) DO UPDATE SET count = rate_buckets.count + 1 RETURNING count'),
+            count = db.execute(sql_text('INSERT INTO rate_buckets (key, "window", count) VALUES (:key, :window, 1) '
+                'ON CONFLICT (key, "window") DO UPDATE SET count = rate_buckets.count + 1 RETURNING count'),
                 {'key': key, 'window': window}).scalar_one()
             blocked = blocked or count > limit
         # Opportunistic bounded retention; old entries are never used for enforcement.
@@ -924,3 +927,12 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
             'ai_levels': levels, 'ai_issue_counts': issues,
             'ai_paired_count': len(changes), 'ai_paired_mean_change': sum(changes) / len(changes) if changes else None,
             'records': records}
+
+
+if __name__ == '__main__':
+    # 自包含启动入口：部署平台只提供单个 HTTP 端口，并通过 PORT 环境变量注入。
+    # 先建表避免接口因缺表全部 500，再监听 0.0.0.0:PORT（未注入时用 3000）。
+    import uvicorn
+    Base.metadata.create_all(engine)
+    port = int(os.getenv('PORT', '3000'))
+    uvicorn.run(app, host='0.0.0.0', port=port)

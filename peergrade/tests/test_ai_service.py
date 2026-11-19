@@ -28,6 +28,25 @@ class AIServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.call_with(httpx.Response(200, content=b'x'*32769))
 
+    async def test_deepseek_json_request_disables_thinking_only_for_official_endpoint(self):
+        original = httpx.AsyncClient
+        result = {'specificity': 1, 'evidence_grounding': 0, 'actionability': 1, 'issues': [], 'suggestions': []}
+        bodies = []
+
+        def respond(request):
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={'model': ai_service.DEEPSEEK_MODEL,
+                                            'choices': [{'message': {'content': json.dumps(result)}}]})
+
+        transport = httpx.MockTransport(respond)
+        with patch('ai_service.httpx.AsyncClient', side_effect=lambda **kw: original(transport=transport, **kw)):
+            for url in (ai_service.DEEPSEEK_API_URL, 'https://another.example.test/chat/completions'):
+                self.assertEqual((await ai_service.request_quality(url, 'synthetic-key', ai_service.DEEPSEEK_MODEL, '{}')).result['quality_level'], 'LOW')
+        self.assertEqual(bodies[0]['response_format'], {'type': 'json_object'})
+        self.assertEqual(bodies[0]['thinking'], {'type': 'disabled'})
+        self.assertNotIn('thinking', bodies[1])
+        self.assertIn('"specificity":1', bodies[0]['messages'][0]['content'])
+
     async def test_quality_report_records_model_version_and_timeout(self):
         from tests.check_quality_model import check_model
 

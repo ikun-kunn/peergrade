@@ -1,13 +1,15 @@
 """Record how a configured model scores synthetic peer-review examples."""
 import argparse
 import asyncio
+import getpass
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 
-from ai_service import request_quality
+from ai_service import DEEPSEEK_API_URL, DEEPSEEK_MODEL, request_quality
 
 
 RUBRIC = ['内容完整性', '逻辑与表达', '分析与创新']
@@ -69,12 +71,22 @@ async def check_model(url, key, model):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True, help='Path for the JSON result')
+    parser.add_argument('--deepseek', action='store_true', help='Use the official DeepSeek endpoint and default non-thinking model')
     args = parser.parse_args()
+    if args.out.exists():
+        parser.error('Choose a new output file; existing reports are not overwritten.')
     url, key, model = (os.getenv(name) for name in ('AI_API_URL', 'AI_API_KEY', 'AI_MODEL'))
+    if args.deepseek:
+        url, model = DEEPSEEK_API_URL, DEEPSEEK_MODEL
+        key = os.getenv('DEEPSEEK_API_KEY')
+        if not key and not sys.stdin.isatty():
+            parser.error('Run in an interactive terminal or privately configure DEEPSEEK_API_KEY.')
+        key = (key or getpass.getpass('DeepSeek API key (hidden; not saved): ')).strip()
     if not all((url, key, model)):
         parser.error('Set AI_API_URL, AI_API_KEY and AI_MODEL before running the check.')
     report = asyncio.run(check_model(url, key, model))
-    args.out.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    with args.out.open('x', encoding='utf-8') as stream:
+        stream.write(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     recorded = sum(case['status'] == 'success' for case in report['cases'])
     print(f'{recorded}/{len(report["cases"])} model responses recorded in {args.out}')
     return 0 if recorded == len(report['cases']) else 1

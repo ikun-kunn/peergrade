@@ -42,9 +42,10 @@ jobs:
           npm ci
           npm test
           npm run build
-      - name: Run SQLite regression and restore checks
+      - name: Run SQLite regression, concurrency and restore checks
         run: |
           python -m unittest discover -s tests -v
+          python -m tests.check_release
           python -m tests.check_restore
 
   postgres:
@@ -78,9 +79,11 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
-      - name: Run PostgreSQL regression and restore checks
+      - name: Run PostgreSQL regression, concurrency, restore and production checks
         env:
           PEERGRADE_TEST_POSTGRES_URL: postgresql+psycopg://peergrade_ci:peergrade_ci_only@127.0.0.1:${{ job.services.postgres.ports['5432'] }}/peergrade_test
         run: |
           python -m unittest discover -s tests -v
+          python -m tests.check_release
           python -m tests.check_restore
+          python -m tests.check_production
