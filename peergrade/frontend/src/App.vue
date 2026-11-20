@@ -523,6 +523,22 @@ async function submitReview() {
 const percent = (n, d) => d ? Math.round(n / d * 100) + '%' : '—'
 const date = (d) => d ? new Date(d).toLocaleString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
 const joinList = (v) => Array.isArray(v) ? (v.join('；') || '无') : '—'
+function aiQualityTotal(check) {
+  if (check.status !== 'SUCCESS') return null
+  const result = check.result
+  const values = [result?.specificity, result?.evidence_grounding, result?.actionability]
+  return values.every(value => Number.isInteger(value) && value >= 0 && value <= 2)
+    ? values.reduce((total, value) => total + value, 0) : null
+}
+function aiCheckStatus(check) {
+  if (check.status !== 'SUCCESS') return aiStatusText[check.status] ?? '—'
+  if (aiQualityTotal(check) === null) return '结果不可用'
+  return ['LOW', 'MEDIUM', 'HIGH'].includes(check.result.quality_level) ? check.result.quality_level : '检测成功'
+}
+const aiCheckIssues = (result) => Array.isArray(result?.issues)
+  ? result.issues.filter(issue => typeof issue?.type === 'string' && typeof issue?.message === 'string') : []
+const aiCheckSuggestions = (result) => joinList(Array.isArray(result?.suggestions)
+  ? result.suggestions.filter(value => typeof value === 'string') : null)
 const evidenceTargetId = (start) => 'feedback-source-' + start
 function highlighted(content, anchors) {
   const chars = Array.from(content ?? ''), total = chars.length
@@ -725,7 +741,20 @@ onBeforeUnmount(() => {
               </li>
             </ul>
           </section>
-          <section class="panel detail-panel"><div class="panel-kicker">QUALITY INSIGHTS</div><h2>反馈质量检测</h2><p class="subtle">共发起 {{ dashboard.ai_call_count }} 次检测（成功 {{ dashboard.ai_success_count }} 次 / 失败 {{ dashboard.ai_failed_count }} 次 / 检测中 {{ dashboard.ai_running_count }} 次）· 低 {{ dashboard.ai_levels.LOW }} · 中 {{ dashboard.ai_levels.MEDIUM }} · 高 {{ dashboard.ai_levels.HIGH }}。只有与最终评价内容一致的检测结果计入等级。</p><p class="hint">存在 {{ dashboard.ai_paired_count }} 组评语发生变化的前后草稿检测（草稿差异检测，不构成实验配对数据）；平均变化 {{ dashboard.ai_paired_mean_change === null ? "—" : dashboard.ai_paired_mean_change.toFixed(1) }} 分。模型评分仅供参考，不能代替人工实验；正式效果验证须按 docs/experiment.md 组织人工盲评。</p><div class="tags"><span v-for="(count,key) in dashboard.ai_issue_counts" :key="key">{{ key }} · {{ count }}</span></div></section><section class="section"><div class="section-title"><div><span class="eyebrow">SUBMISSIONS</span><h2>作业与评价 <span>{{ dashboard.records.length }}</span></h2></div></div><div v-if="!dashboard.records.length" class="empty">尚无学生提交作业，暂无可查看的互评记录。</div><details v-for="record in dashboard.records" :key="record.submission_id" class="panel record"><summary><strong>{{ record.student_name }}</strong><span v-if="record.summary.high_disagreement" class="pill purple">高分歧，建议复核</span><span>{{ record.summary.incomplete ? '评价数量不足' : '平均 '+(record.summary.average_total ?? '—')+' / 15' }}</span></summary><div class="record-body"><h3>作业正文</h3><p class="prose">{{ record.content_text }}</p><div v-for="r in record.reviews" :key="r.id" class="record-review"><strong>评审：{{ r.reviewer_name }} · {{ statusText[r.phase] }}</strong><template v-if="r.review"><p>得分：{{ (r.review.scores||[]).join(' / ') }}（总分 {{ r.review.total_score }}）</p><p>优点：{{ r.review.strengths }}</p><p>问题：{{ r.review.weaknesses }}</p><p>建议：{{ r.review.suggestions }}</p><div v-for="a in (r.review.evidence_anchors||[])" :key="a.start" class="evidence">“{{ a.quote }}”</div></template><details v-for="(c,i) in r.ai_checks" :key="i" class="check-record"><summary>检测草稿 {{ i+1 }} · {{ date(c.created_at) }} · {{ c.status==='SUCCESS' ? (c.result?.quality_level ?? '—') : (aiStatusText[c.status] ?? '—') }}</summary><p>优点：{{ c.input_data?.review?.strengths ?? '—' }}</p><p>问题：{{ c.input_data?.review?.weaknesses ?? '—' }}</p><p>建议：{{ c.input_data?.review?.suggestions ?? '—' }}</p><p>证据：{{ joinList(c.input_data?.evidence_quotes) }}</p><p v-if="c.result">质量提示：{{ joinList(c.result?.suggestions) }}</p></details></div></div></details></section></template>
+          <section class="panel detail-panel"><div class="panel-kicker">QUALITY INSIGHTS</div><h2>反馈质量检测</h2><p class="subtle">共发起 {{ dashboard.ai_call_count }} 次检测（成功 {{ dashboard.ai_success_count }} 次 / 失败 {{ dashboard.ai_failed_count }} 次 / 检测中 {{ dashboard.ai_running_count }} 次）· 低 {{ dashboard.ai_levels.LOW }} · 中 {{ dashboard.ai_levels.MEDIUM }} · 高 {{ dashboard.ai_levels.HIGH }}。只有与最终评价内容一致的检测结果计入等级。</p><p class="hint">存在 {{ dashboard.ai_paired_count }} 组评语发生变化的前后草稿检测（草稿差异检测，不构成实验配对数据）；平均变化 {{ dashboard.ai_paired_mean_change === null ? "—" : dashboard.ai_paired_mean_change.toFixed(1) }} 分。模型评分仅供参考，不能代替人工实验；正式效果验证须按 docs/experiment.md 组织人工盲评。</p><div class="tags"><span v-for="(count,key) in dashboard.ai_issue_counts" :key="key">{{ key }} · {{ count }}</span></div></section><section class="section"><div class="section-title"><div><span class="eyebrow">SUBMISSIONS</span><h2>作业与评价 <span>{{ dashboard.records.length }}</span></h2></div></div><div v-if="!dashboard.records.length" class="empty">尚无学生提交作业，暂无可查看的互评记录。</div><details v-for="record in dashboard.records" :key="record.submission_id" class="panel record"><summary><strong>{{ record.student_name }}</strong><span v-if="record.summary.high_disagreement" class="pill purple">高分歧，建议复核</span><span>{{ record.summary.incomplete ? '评价数量不足' : '平均 '+(record.summary.average_total ?? '—')+' / 15' }}</span></summary><div class="record-body"><h3>作业正文</h3><p class="prose">{{ record.content_text }}</p><div v-for="r in record.reviews" :key="r.id" class="record-review"><strong>评审：{{ r.reviewer_name }} · {{ statusText[r.phase] }}</strong><template v-if="r.review"><p>得分：{{ (r.review.scores||[]).join(' / ') }}（总分 {{ r.review.total_score }}）</p><p>优点：{{ r.review.strengths }}</p><p>问题：{{ r.review.weaknesses }}</p><p>建议：{{ r.review.suggestions }}</p><div v-for="a in (r.review.evidence_anchors||[])" :key="a.start" class="evidence">“{{ a.quote }}”</div></template><details v-for="(c,i) in r.ai_checks" :key="i" class="check-record">
+                <summary>检测草稿 {{ i+1 }} · {{ date(c.created_at) }} · {{ aiCheckStatus(c) }}</summary>
+                <p>优点：{{ c.input_data?.review?.strengths ?? '—' }}</p>
+                <p>问题：{{ c.input_data?.review?.weaknesses ?? '—' }}</p>
+                <p>建议：{{ c.input_data?.review?.suggestions ?? '—' }}</p>
+                <p>证据：{{ joinList(c.input_data?.evidence_quotes) }}</p>
+                <template v-if="aiQualityTotal(c) !== null">
+                  <p>质量分：{{ aiQualityTotal(c) }} / 6（具体性 {{ c.result.specificity }}/2　依据性 {{ c.result.evidence_grounding }}/2　可操作性 {{ c.result.actionability }}/2）</p>
+                  <p v-if="!aiCheckIssues(c.result).length">AI 检测问题：无</p>
+                  <p v-for="(issue,j) in aiCheckIssues(c.result)" :key="j">AI 检测问题：{{ issue.type }} · {{ issue.message }}</p>
+                  <p>质量提示：{{ aiCheckSuggestions(c.result) }}</p>
+                </template>
+                <p v-else-if="c.status === 'SUCCESS'">该历史检测无可用质量结果。</p>
+              </details></div></div></details></section></template>
       </div>
     </main>
   </div>

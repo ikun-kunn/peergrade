@@ -46,9 +46,9 @@ python -m tests.check_release
 python -m tests.check_restore
 ```
 
-前端组件测试覆盖原文证据定位、冲突时保留本地编辑、教师发布入口、学生注册、教师延期及结案等交互。普通开发和 Docker 构建使用 `npm run build`；应用通过 `frontend/dist` 提供页面。如果目标发布平台会排除 `dist`，在 `frontend` 目录运行 `npm run build:publish` 同步生成 `dist` 和 `webroot`，并核对实际提供的资源版本。
+前端组件测试覆盖原文证据定位、冲突与网络失败时保留本地编辑、重复点击保护、教师完整 AI 检测历史、教师发布入口、学生注册、教师延期及结案等交互。普通开发和 Docker 构建使用 `npm run build`；应用通过 `frontend/dist` 提供页面。如果目标发布平台会排除 `dist`，在 `frontend` 目录运行 `npm run build:publish` 同步生成 `dist` 和 `webroot`，并核对实际提供的资源版本。
 
-默认测试使用独立的临时 SQLite 数据库。切换到 PostgreSQL 时，将 `PEERGRADE_TEST_POSTGRES_URL` 指向**专用的测试数据库**，并赋予测试账号创建 schema 的权限；测试创建、清理独立 schema。不可指向含真实数据的生产数据库。`tests.check_release` 使用 1 个教师和 9 个学生合成账号执行并发检查，记录常用接口耗时（目标为每个请求不超过 2 秒）。该检查在应用进程内完成，不能视为公网负载测试。
+默认测试使用独立的临时 SQLite 数据库。切换到 PostgreSQL 时，将 `PEERGRADE_TEST_POSTGRES_URL` 指向**专用的测试数据库**，并赋予测试账号创建 schema 的权限；测试创建、清理独立 schema。不可指向含真实数据的生产数据库。`tests.check_release` 使用 1 个教师和 9 个学生合成账号执行并发读取及完整写入流程，包括建任务、9 份提交、18 份草稿保存/恢复/正式评价及反馈发布，记录常用接口耗时（目标为每个请求不超过 2 秒）。可使用 `--out` 保存新的 JSON 验收记录。该检查在应用进程内完成，不能视为公网负载测试。
 
 恢复演练在新数据库中通过应用接口核对已发布任务、两份反馈及原文证据。PostgreSQL 恢复演练要求 `pg_dump`、`pg_restore` 在 PATH 上，并让测试账号拥有 `CREATEDB` 权限；脚本仅清理自己创建的恢复库，输出不含账号和作业内容。
 
