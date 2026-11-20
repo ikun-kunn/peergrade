@@ -25,7 +25,7 @@ python run_local.py
 
 ## AI 质量检测
 
-可选配置 `AI_API_KEY`、`AI_API_URL`（兼容 Chat Completions 的完整 HTTPS 地址）和 `AI_MODEL`。未配置或模型服务不可用时，仍可正常人工互评。模型接收评分量规、作业摘录、证据及评价草稿；向外部服务发送真实数据前须获得适当授权。服务端校验输出结构、分值和质量等级，学生自行决定是否采纳提示。
+可选配置 `AI_API_KEY`、`AI_API_URL`（兼容 Chat Completions 的完整 HTTPS 地址）和 `AI_MODEL`。未配置或模型服务不可用时，仍可正常人工互评。模型接收评分量规、作业摘录、证据及评价草稿；向外部服务发送真实数据前须获得适当授权。服务端校验输出结构、分值和质量等级，学生自行决定是否采纳提示。每条互评最多发起 3 次模型检测，失败、超时和已发起的并发调用均计入；未配置服务或校验失败不占用额度，达到上限后仍可保存草稿并提交。
 
 如果选择 DeepSeek 官方 API，安装依赖后运行 `python run_local.py --deepseek` 可在本地终端隐藏输入 API Key，密钥只用于当前进程，不保存到源码或前端。默认使用 `https://api.deepseek.com/chat/completions` 和 `deepseek-flash`；不带参数时按现有环境运行。
 

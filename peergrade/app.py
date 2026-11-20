@@ -31,10 +31,9 @@ MAX_SUBMISSION_CHARS = 10000
 # 超过 10000（QA 实测 13509 字符）。在线输入仍限 10000，PDF 提取文本单独放宽到 30000。
 MAX_PDF_CHARS = 30000
 MIN_REVIEW_SUBMISSIONS = 3
-AI_SUCCESS_LIMIT = 3
-AI_ATTEMPT_LIMIT = 9
-# Give a bounded request time to save its result. Interrupted workers release
-# their success slot after this interval, while the reserved attempt still counts.
+AI_ATTEMPT_LIMIT = 3
+# A reserved model request permanently consumes one attempt. This deadline is
+# only for classifying an interrupted worker's unfinished result as failed.
 AI_RESERVATION_TTL = timedelta(seconds=2 * MODEL_TIMEOUT_SECONDS)
 
 
@@ -616,12 +615,8 @@ def review_tasks(db: DB, actor: Actor):
             for task, item in tasks]
 
 
-def ai_usage(db, task_id, now):
-    return db.execute(
-        select(func.count(), func.count().filter(AICheck.status == 'SUCCESS'),
-               func.count().filter(AICheck.status == 'RUNNING', AICheck.created_at > now - AI_RESERVATION_TTL))
-        .select_from(AICheck).where(AICheck.review_task_id == task_id)
-    ).one()
+def ai_attempt_count(db, task_id):
+    return db.scalar(select(func.count()).select_from(AICheck).where(AICheck.review_task_id == task_id))
 
 
 def ai_attempt_status(check, now):
@@ -638,10 +633,11 @@ def review_task(task_id: str, db: DB, actor: Actor):
     draft = db.scalar(select(ReviewDraft).where(ReviewDraft.review_task_id == task.id))
     has_pending = db.scalar(select(review_exists(item.id, pending=True)))
     now = datetime.now(timezone.utc)
-    attempts, successes, _ = ai_usage(db, task.id, now)
+    attempts = ai_attempt_count(db, task.id)
     return {'id': task.id, 'assignment': assignment_json(item, now, has_pending), **review_task_state(task, item, now),
             'anonymous_code': submission.id[:8].upper(), 'content_text': submission.content_text,
-            'ai_limit_reached': attempts >= AI_ATTEMPT_LIMIT or successes >= AI_SUCCESS_LIMIT,
+            'ai_limit_reached': attempts >= AI_ATTEMPT_LIMIT,
+            'ai_attempts_remaining': max(0, AI_ATTEMPT_LIMIT - attempts),
             'content_hash': submission.content_hash,
             'review': review_json(review) if review else None, 'draft': draft.content if draft and not review else None}
 
@@ -743,11 +739,8 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
     now = datetime.now(timezone.utc)
     if not review_is_writable(task, item, now):
         fail(409, '当前不能检测该评价')
-    attempts, successes, running = ai_usage(db, task.id, now)
-    if successes >= AI_SUCCESS_LIMIT or attempts >= AI_ATTEMPT_LIMIT:
+    if ai_attempt_count(db, task.id) >= AI_ATTEMPT_LIMIT:
         fail(429, '该互评的 AI 检测额度已用完，仍可直接提交评价')
-    if successes + running >= AI_SUCCESS_LIMIT:
-        fail(429, '已有检测正在处理，请等待结果，也可以直接提交评价')
     key, url, model = os.getenv('AI_API_KEY'), os.getenv('AI_API_URL'), os.getenv('AI_MODEL')
     if not all((key, url, model)):
         fail(503, 'AI 检测暂不可用，您仍可直接提交评价')
@@ -782,7 +775,7 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
 
     lock_assignment(db, task.assignment_id)
     db.refresh(check)
-    # An expired request cannot publish a result after its slot has been reused.
+    # An expired request cannot publish a result; its attempt remains counted.
     if ai_attempt_status(check, datetime.now(timezone.utc)) != 'RUNNING':
         result = None
     check.status, check.result = ('SUCCESS' if result is not None else 'FAILED'), result

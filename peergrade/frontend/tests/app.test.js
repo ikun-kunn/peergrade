@@ -208,6 +208,37 @@ test('刷新待评任务保留本地编辑，收到正式评价后仍可查看�
   assert.doesNotMatch(renderedText(root), /未提交的评价草稿/)
 })
 
+test('第三次检测失败后刷新额度并禁用检测，保留本地草稿与提交入口', async t => {
+  const task = { id: 'review-1', assignment_title: assignment.title, can_write: true, phase: 'PENDING', anonymous_code: 'A1' }
+  let detail = { ...task, assignment, content_text: content, draft, review: null, status: 'PENDING',
+    ai_limit_reached: false, ai_attempts_remaining: 1 }
+  let calls = 0
+  const { root } = await render(t, {
+    '/api/review-tasks': [task],
+    '/api/review-tasks/review-1': () => detail,
+    '/api/review-tasks/review-1/ai-check': options => {
+      assert.equal(options.method, 'POST')
+      assert.equal(JSON.parse(options.body).strengths, '尚未保存的本页评价')
+      calls++
+      detail = { ...detail, ai_limit_reached: true, ai_attempts_remaining: 0 }
+      return Response.json({ detail: 'AI 检测失败或超时，您仍可直接提交评价' }, { status: 503 })
+    }
+  })
+  await click(button(root, assignment.title))
+  assert.match(renderedText(root), /最多调用 3 次（含失败及超时）。剩余 1 次/)
+  const strengths = () => descendants(root).find(el => el.tag === 'textarea')
+  await enter(strengths(), '尚未保存的本页评价')
+  await click(button(root, '检测反馈质量'))
+  assert.equal(calls, 1)
+  assert.match(renderedText(root), /AI 检测失败或超时/)
+  assert.match(renderedText(root), /AI 检测额度已用完/)
+  assert.equal(button(root, '检测反馈质量').props.disabled, true)
+  assert.notEqual(button(root, '保存草稿').props.disabled, true)
+  assert.notEqual(descendants(root).find(el => el.tag === 'fieldset').props.disabled, true)
+  assert.ok(button(root, '提交评价'))
+  assert.equal(strengths().value, '尚未保存的本页评价')
+})
+
 test('最后一份评价提交后，教师可在原页面看到发布入口', async t => {
   let detail = { ...assignment, phase: 'REVIEWING', available_actions: [], member_count: 3,
     submission_count: 3, minimum_submission_count: 3 }
