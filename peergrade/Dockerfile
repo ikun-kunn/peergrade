@@ -10,7 +10,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt && useradd --create-home --uid 10001 peergrade
-COPY app.py ai_service.py domain.py models.py manage.py ./
+COPY app.py ai_service.py domain.py models.py manage.py db_migrations.py ./
+COPY migrations/ ./migrations/
 COPY --from=frontend /build/frontend/dist ./frontend/dist
 USER peergrade
 EXPOSE 8000

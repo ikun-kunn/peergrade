@@ -107,7 +107,7 @@ async function render(t, routes, role = 'STUDENT') {
     fetch: async (path, options) => {
       assert.ok(Object.hasOwn(responses, path), 'Unexpected request ' + path)
       const route = responses[path]
-      const result = typeof route === 'function' ? route(options) : route
+      const result = typeof route === 'function' ? await route(options) : route
       return result instanceof Response ? result : Response.json(result)
     }
   }
@@ -208,6 +208,96 @@ test('刷新待评任务保留本地编辑，收到正式评价后仍可查看�
   assert.doesNotMatch(renderedText(root), /未提交的评价草稿/)
 })
 
+test('草稿保存遇到网络失败时保留本地文字和证据，重试期间重复触发只发送一次', async t => {
+  const task = { id: 'review-1', assignment_title: assignment.title, can_write: true, phase: 'PENDING', anonymous_code: 'A1' }
+  const savedDraft = { ...draft, evidence_anchors: anchors }
+  const detail = { ...task, assignment, content_text: content, draft: savedDraft, review: null, status: 'PENDING' }
+  const writes = []
+  let releaseRetry
+  const { root } = await render(t, {
+    '/api/review-tasks': [task],
+    '/api/review-tasks/review-1': detail,
+    '/api/review-tasks/review-1/draft': options => {
+      assert.equal(options.method, 'POST')
+      writes.push(JSON.parse(options.body))
+      if (writes.length === 1) throw new TypeError('connection dropped')
+      return new Promise(resolve => { releaseRetry = resolve })
+    }
+  })
+  await click(button(root, assignment.title))
+  const strengths = () => descendants(root).find(el => el.tag === 'textarea')
+  await enter(strengths(), '网络失败时尚未保存的本地评价')
+  const remove = descendants(root).filter(el => el.tag === 'button' && el.props['aria-label'] === '删除这条证据')
+  assert.equal(remove.length, 2)
+  await click(remove[0])
+  const expected = { ...draft, strengths: '网络失败时尚未保存的本地评价', evidence_anchors: [anchors[1]] }
+  const assertLocal = () => {
+    assert.equal(strengths().value, expected.strengths)
+    const count = descendants(root).find(el => el.props.class === 'evidence-count')
+    assert.equal(renderedText(count), '1 / 3')
+  }
+
+  await click(button(root, '保存草稿'))
+  assert.deepEqual(writes, [expected])
+  assert.match(renderedText(root), /网络连接失败，请检查网络或服务器状态后重试/)
+  assertLocal()
+  assert.notEqual(button(root, '保存草稿').props.disabled, true)
+  assert.notEqual(button(root, '保存草稿').props['aria-busy'], true)
+
+  // Call the saved handler twice before the next render, as on rapid repeated activation.
+  const saveHandler = button(root, '保存草稿').props.onClick
+  const retry = saveHandler()
+  const duplicate = saveHandler()
+  await duplicate
+  await nextTick()
+  assert.equal(typeof releaseRetry, 'function')
+  assert.deepEqual(writes, [expected, expected])
+  const waiting = button(root, '正在保存…')
+  assert.equal(waiting.props.disabled, true)
+  assert.equal(waiting.props['aria-busy'], true)
+  assertLocal()
+  releaseRetry({ ok: true })
+  await retry
+  await nextTick()
+  assert.match(renderedText(root), /草稿已保存，可以稍后继续/)
+  assert.doesNotMatch(renderedText(root), /网络连接失败/)
+  assert.notEqual(button(root, '保存草稿').props.disabled, true)
+  assert.notEqual(button(root, '保存草稿').props['aria-busy'], true)
+  assert.deepEqual(writes, [expected, expected])
+  assertLocal()
+})
+
+test('第三次检测失败后刷新额度并禁用检测，保留本地草稿与提交入口', async t => {
+  const task = { id: 'review-1', assignment_title: assignment.title, can_write: true, phase: 'PENDING', anonymous_code: 'A1' }
+  let detail = { ...task, assignment, content_text: content, draft, review: null, status: 'PENDING',
+    ai_limit_reached: false, ai_attempts_remaining: 1 }
+  let calls = 0
+  const { root } = await render(t, {
+    '/api/review-tasks': [task],
+    '/api/review-tasks/review-1': () => detail,
+    '/api/review-tasks/review-1/ai-check': options => {
+      assert.equal(options.method, 'POST')
+      assert.equal(JSON.parse(options.body).strengths, '尚未保存的本页评价')
+      calls++
+      detail = { ...detail, ai_limit_reached: true, ai_attempts_remaining: 0 }
+      return Response.json({ detail: 'AI 检测失败或超时，您仍可直接提交评价' }, { status: 503 })
+    }
+  })
+  await click(button(root, assignment.title))
+  assert.match(renderedText(root), /最多调用 3 次（含失败及超时）。剩余 1 次/)
+  const strengths = () => descendants(root).find(el => el.tag === 'textarea')
+  await enter(strengths(), '尚未保存的本页评价')
+  await click(button(root, '检测反馈质量'))
+  assert.equal(calls, 1)
+  assert.match(renderedText(root), /AI 检测失败或超时/)
+  assert.match(renderedText(root), /AI 检测额度已用完/)
+  assert.equal(button(root, '检测反馈质量').props.disabled, true)
+  assert.notEqual(button(root, '保存草稿').props.disabled, true)
+  assert.notEqual(descendants(root).find(el => el.tag === 'fieldset').props.disabled, true)
+  assert.ok(button(root, '提交评价'))
+  assert.equal(strengths().value, '尚未保存的本页评价')
+})
+
 test('最后一份评价提交后，教师可在原页面看到发布入口', async t => {
   let detail = { ...assignment, phase: 'REVIEWING', available_actions: [], member_count: 3,
     submission_count: 3, minimum_submission_count: 3 }
@@ -220,6 +310,55 @@ test('最后一份评价提交后，教师可在原页面看到发布入口', as
   detail = { ...detail, phase: 'READY_TO_PUBLISH', available_actions: ['close'] }
   await refresh()
   assert.ok(button(root, '发布反馈并结束任务'))
+})
+
+test('教师检测历史展示完整成功结果，不为失败、进行中和无效历史结果显示质量分', async t => {
+  const detail = { ...assignment, phase: 'READY_TO_PUBLISH', available_actions: ['close'], member_count: 3,
+    submission_count: 3, minimum_submission_count: 3 }
+  const input_data = { review: draft, evidence_quotes: [quote] }
+  const check = (status, result) => ({ status, result, input_data, created_at: '2026-11-18T00:30:00Z' })
+  const valid = { specificity: 2, evidence_grounding: 1, actionability: 2, quality_level: 'HIGH',
+    issues: [{ type: '证据不足', message: '请核对原文 <em>依据</em>' }], suggestions: ['补充具体原文行号'] }
+  const stale = { ...valid, issues: [{ type: '旧问题', message: '旧检测结果' }], suggestions: ['不应展示的旧提示'] }
+  const { root } = await render(t, {
+    '/api/assignments': [detail],
+    '/api/assignments/assignment-1': detail,
+    '/api/assignments/assignment-1/dashboard': {
+      assignment: detail, member_count: 3, submission_count: 3, review_count: 1, review_task_count: 6,
+      complete_average: null, high_disagreement_count: 0, submission_roster: [], ai_call_count: 6,
+      ai_success_count: 4, ai_failed_count: 1, ai_running_count: 1, ai_levels: { LOW: 1, MEDIUM: 0, HIGH: 1 },
+      ai_paired_count: 0, ai_paired_mean_change: null, ai_issue_counts: {},
+      records: [{ submission_id: 'work-1', student_name: '合成作者', content_text: content,
+        summary: { incomplete: true, high_disagreement: false, average_total: null },
+        reviews: [{ id: 'review-1', reviewer_name: '合成评审', phase: 'PENDING', review: null,
+          ai_checks: [check('SUCCESS', valid), check('FAILED', stale), check('RUNNING', stale),
+            check('SUCCESS', null), check('SUCCESS', { ...stale, specificity: 3 }),
+            check('SUCCESS', { specificity: 0, evidence_grounding: 0, actionability: 0, quality_level: 'LOW', issues: [], suggestions: [] })]
+        }]
+      }]
+    }
+  }, 'TEACHER')
+  await click(button(root, assignment.title))
+  await click(button(root, '查看教师看板'))
+  const histories = descendants(root).filter(el => el.tag === 'details' && el.props.class === 'check-record')
+  assert.equal(histories.length, 6)
+  const first = renderedText(histories[0])
+  assert.match(first, /HIGH/)
+  assert.match(first, /质量分：5 \/ 6（具体性 2\/2　依据性 1\/2　可操作性 2\/2）/)
+  assert.match(first, /AI 检测问题：证据不足 · 请核对原文 <em>依据<\/em>/)
+  assert.match(first, /质量提示：补充具体原文行号/)
+  assert.ok(!descendants(histories[0]).some(el => el.tag === 'em' || Object.hasOwn(el.props, 'innerHTML')))
+  for (const [index, status] of ['检测失败', '检测中', '结果不可用', '结果不可用'].entries()) {
+    const history = renderedText(histories[index + 1])
+    assert.ok(history.includes(status), history)
+    assert.match(history, /优点：已保存的草稿/)
+    assert.doesNotMatch(history, /质量分：|AI 检测问题：|质量提示：|不应展示的旧提示|HIGH/)
+  }
+  const zero = renderedText(histories[5])
+  assert.match(zero, /LOW/)
+  assert.match(zero, /质量分：0 \/ 6/)
+  assert.match(zero, /AI 检测问题：无/)
+  assert.match(zero, /质量提示：无/)
 })
 
 async function enter(node, value) {
@@ -312,4 +451,45 @@ test('已过期评价只保留历史入口，不再计入待完成数', async t 
   assert.match(renderedText(overview), /待完成互评1需要你关注的评价/)
   assert.match(renderedText(button(root, '过期任务')), /评价已截止/)
   assert.match(renderedText(button(root, '进行中的任务')), /待评价/)
+})
+
+test('切换账号时丢弃旧账号仍在途的任务详情请求', async t => {
+  let completeOldRequest, requestStarted = false, account = 'old'
+  const old = { ...assignment, phase: 'SUBMITTING', has_submission: true }
+  const newAssignment = { ...assignment, id: 'assignment-2', title: '新账号合法任务', phase: 'SUBMITTING', has_submission: false }
+  const { root } = await render(t, {
+    '/api/assignments': () => account === 'old' ? [old] : [newAssignment],
+    '/api/assignments/assignment-1': () => {
+      requestStarted = true
+      return new Promise(resolve => { completeOldRequest = resolve })
+    },
+    '/api/auth/logout': () => { account = 'new'; return { ok: true } },
+    '/api/auth/login': () => ({ id: 'new', role: 'STUDENT', display_name: '新账号' })
+  })
+  const oldNavigation = click(button(root, assignment.title))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(requestStarted, true)
+  const signOut = descendants(root).find(node => node.tag === 'button' && node.props['aria-label'] === '退出登录')
+  assert.ok(signOut)
+  await click(signOut)
+  await submitForm(root)
+  assert.match(renderedText(root), /新账号合法任务/)
+  completeOldRequest({ ...old, my_submission: { content_type: 'TEXT', content_text: '上一账号的私有作业正文' } })
+  await oldNavigation
+  assert.match(renderedText(root), /新账号合法任务/)
+  assert.doesNotMatch(renderedText(root), /上一账号的私有作业正文|案例任务/)
+})
+
+test('当前会话过期后清空已加载任务并返回登录', async t => {
+  let expired = false
+  const { root, refresh } = await render(t, {
+    '/api/assignments': () => expired ? Response.json({ detail: '登录已过期' }, { status: 401 }) : [{ ...assignment, phase: 'SUBMITTING' }]
+  })
+  assert.match(renderedText(root), /案例任务/)
+  expired = true
+  await refresh()
+  await nextTick()
+  assert.match(renderedText(root), /登录 PeerGrade/)
+  assert.match(renderedText(root), /登录已过期，请重新登录/)
+  assert.doesNotMatch(renderedText(root), /案例任务/)
 })

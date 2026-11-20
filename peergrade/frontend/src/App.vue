@@ -9,6 +9,7 @@ const pending = reactive({}) // 按操作名记录请求中状态，避免一次
 const busy = computed(() => Object.values(pending).some(Boolean))
 const isBusy = (key) => !!pending[key]
 let actionVersion = 0
+let sessionVersion = 0
 
 const assignments = ref([]), tasks = ref([]), students = ref([])
 const active = ref(null), detail = ref(null), dashboard = ref(null), feedback = ref(null)
@@ -55,12 +56,30 @@ function assignmentStatus(item) {
 const pageLabel = { home: '我的任务', create: '创建任务', assignment: '任务详情', review: '撰写互评', feedback: '收到的反馈', dashboard: '教师看板' }
 const codePoints = (s) => Array.from(s ?? '').length
 
+// Keep deferred requests bound to the account that initiated them. A response from
+// a previous session must never restore a private assignment or review after logout.
+function clearWorkspace() {
+  sessionVersion++
+  actionVersion++
+  for (const key of Object.keys(pending)) delete pending[key]
+  user.value = null; assignments.value = []; tasks.value = []; students.value = []
+  active.value = detail.value = dashboard.value = feedback.value = null
+  selectionInfo.value = quality.value = focusedEvidence.value = pdf.value = null
+  text.value = ''; selected.value = []
+  Object.assign(review, { scores: [3, 3, 3], strengths: '', weaknesses: '', suggestions: '' })
+  Object.assign(creation, { title: '', description: '', rubric: ['内容完整性', '逻辑与表达', '分析与创新'], submit_deadline: '', review_deadline: '', student_ids: [] })
+  Object.assign(extension, { submit_deadline: '', review_deadline: '' })
+  extending.value = false
+  page.value = 'home'
+}
+
 /* ---------- 分级提示 ---------- */
 function setNotice(type, text) { notice.value = { type, text } }
 function clearNotice() { notice.value = { type: '', text: '' } }
 
 /* ---------- 接口层：区分网络失败 / 服务错误 / 业务校验失败 ---------- */
 async function api(path, options = {}) {
+  const viewer = user.value, session = sessionVersion
   let response
   try {
     response = await fetch('/api' + path, {
@@ -73,6 +92,10 @@ async function api(path, options = {}) {
   }
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
+    if (response.status === 401 && viewer && user.value === viewer && sessionVersion === session) {
+      clearWorkspace()
+      setNotice('warn', '登录已过期，请重新登录')
+    }
     const detailText = typeof body.detail === 'string' ? body.detail : ''
     const err = new Error(detailText || (response.status >= 500 ? '服务暂时不可用，请稍后重试' : '请求失败，请检查输入后重试'))
     err.kind = response.status >= 500 ? 'server' : 'business'
@@ -83,18 +106,21 @@ async function api(path, options = {}) {
 }
 async function run(key, fn, success = '') {
   if (isBusy(key)) return
+  const session = sessionVersion, token = Symbol(key)
   actionVersion++
-  clearNotice(); pending[key] = true
+  clearNotice(); pending[key] = token
   try {
     await fn()
-    if (success) setNotice('success', success)
+    if (sessionVersion === session && success) setNotice('success', success)
   } catch (e) {
+    if (sessionVersion !== session) return
     if (e.status === 409 && user.value) {
       try { await refreshOpenDetail() } catch { /* Keep the original conflict message. */ }
     }
-    setNotice(e.kind === 'business' ? 'warn' : 'error', e.message || '操作失败，请稍后重试')
+    if (sessionVersion === session) setNotice(e.kind === 'business' ? 'warn' : 'error', e.message || '操作失败，请稍后重试')
   } finally {
-    delete pending[key]
+    // A previous account's completion must not unlock the new account's request.
+    if (pending[key] === token) delete pending[key]
   }
 }
 const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
@@ -166,18 +192,21 @@ async function signIn() {
 async function signOut() {
   await run('auth', async () => {
     // 本地登出优先：会话过期或网络失败时也必须清理界面状态。
-    try { await post('/auth/logout') } catch { /* 忽略 */ }
-    user.value = null; assignments.value = []; tasks.value = []
-    active.value = detail.value = dashboard.value = feedback.value = null
-    selectionInfo.value = null; quality.value = null
-    page.value = 'home'
+    const session = sessionVersion
+    let uncertain = false
+    try { await post('/auth/logout') } catch (e) { uncertain = e.status !== 401 }
+    if (sessionVersion === session) clearWorkspace()
+    if (uncertain) setNotice('warn', '服务端尚未确认退出，恢复网络后请重新退出登录；刷新页面可能仍显示登录状态。')
     await scrollTop()
   })
 }
-async function goHome() { await run('nav', async () => { await refresh(); page.value = 'home'; await scrollTop() }) }
+async function goHome() { await run('nav', async () => { const viewer = user.value; await refresh(); if (user.value !== viewer) return; page.value = 'home'; await scrollTop() }) }
 async function openAssignment(id) {
   await run('nav', async () => {
-    active.value = await api('/assignments/' + id)
+    const viewer = user.value
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    active.value = latest
     text.value = active.value.my_submission?.content_type === 'TEXT' ? active.value.my_submission.content_text : ''
     pdf.value = null
     if (pdfInput.value) pdfInput.value.value = ''
@@ -187,7 +216,11 @@ async function openAssignment(id) {
   })
 }
 async function newAssignment() {
-  await run('nav', async () => { students.value = await api('/students'); page.value = 'create'; await scrollTop() })
+  await run('nav', async () => {
+    const viewer = user.value, list = await api('/students')
+    if (user.value !== viewer) return
+    students.value = list; page.value = 'create'; await scrollTop()
+  })
 }
 
 /* ---------- 创建任务：截止时间前端校验 ---------- */
@@ -205,6 +238,7 @@ const deadlineErrors = computed(deadlineIssues)
 
 async function createAssignment() {
   await run('create', async () => {
+    const viewer = user.value
     const issues = deadlineIssues()
     if (issues.length) { const err = new Error(issues.join('；')); err.kind = 'business'; throw err }
     if (creation.student_ids.length < 3) { const err = new Error('至少选择 3 名参与学生'); err.kind = 'business'; throw err }
@@ -218,8 +252,10 @@ async function createAssignment() {
       submit_deadline: submitDate.toISOString(), review_deadline: reviewDate.toISOString(),
       student_ids: creation.student_ids
     })
+    if (user.value !== viewer) return
     Object.assign(creation, { title: '', description: '', rubric: ['内容完整性', '逻辑与表达', '分析与创新'], submit_deadline: '', review_deadline: '', student_ids: [] })
-    await refresh(); page.value = 'home'; await scrollTop()
+    await refresh(); if (user.value !== viewer || page.value !== 'create') return
+    page.value = 'home'; await scrollTop()
   }, '任务已创建')
 }
 
@@ -235,6 +271,7 @@ function openExtension() {
 async function extendDeadlines() {
   await run('extend', async () => {
     const item = active.value
+    const viewer = user.value
     const originalReview = extension.review_deadline === localDateTime(item.review_deadline)
     const latest = await api('/assignments/' + item.id + '/deadlines', {
       method: 'PATCH',
@@ -243,6 +280,7 @@ async function extendDeadlines() {
         review_deadline: originalReview ? item.review_deadline : new Date(extension.review_deadline).toISOString()
       })
     })
+    if (user.value !== viewer) return
     if (page.value === 'assignment' && active.value?.id === item.id) {
       active.value = latest
       extending.value = false
@@ -260,6 +298,7 @@ async function submitText() {
     if (!draft.trim()) { const err = new Error('作业正文不能为空'); err.kind = 'business'; throw err }
     if (codePoints(draft.trim()) > 10000) { const err = new Error('作业正文最多 10000 字符'); err.kind = 'business'; throw err }
     await post('/assignments/' + id + '/submission', { content_text: draft })
+    if (user.value !== viewer) return
     const latest = await api('/assignments/' + id)
     if (user.value === viewer && page.value === 'assignment' && active.value?.id === id) {
       active.value = latest
@@ -287,6 +326,7 @@ async function submitPDF() {
     const form = new FormData()
     form.append('file', file)
     await api('/assignments/' + id + '/submission/pdf', { method: 'POST', body: form })
+    if (user.value !== viewer) return
     const latest = await api('/assignments/' + id)
     if (user.value === viewer && page.value === 'assignment' && active.value?.id === id) {
       active.value = latest
@@ -300,27 +340,41 @@ async function submitPDF() {
 }
 async function startReview() {
   await run('start', async () => {
-    const res = await post('/assignments/' + active.value.id + '/start-review')
-    active.value = await api('/assignments/' + active.value.id)
+    const viewer = user.value, id = active.value.id
+    const res = await post('/assignments/' + id + '/start-review')
+    if (user.value !== viewer) return
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    if (page.value === 'assignment' && active.value?.id === id) active.value = latest
     await refresh()
-    setNotice('success', res.created ? `已生成 ${res.count} 条匿名互评任务` : '互评已开始')
+    if (user.value === viewer) setNotice('success', res.created ? `已生成 ${res.count} 条匿名互评任务` : '互评已开始')
   })
 }
 async function closeAssignment() {
   const skipped = active.value.phase === 'REVIEW_NOT_STARTED'
   if (skipped && !window.confirm('本次未生成互评任务。结束后，学生将看到本次未开展互评。确定结束？')) return
   await run('close', async () => {
-    await post('/assignments/' + active.value.id + '/close')
-    active.value = await api('/assignments/' + active.value.id)
+    const viewer = user.value, id = active.value.id
+    await post('/assignments/' + id + '/close')
+    if (user.value !== viewer) return
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    if (page.value === 'assignment' && active.value?.id === id) active.value = latest
     await refresh()
   }, skipped ? '任务已结束，本次未开展互评' : '任务已结束，学生可以查看反馈')
 }
 async function openDashboard(id) {
-  await run('nav', async () => { dashboard.value = await api('/assignments/' + id + '/dashboard'); page.value = 'dashboard'; await scrollTop() })
+  await run('nav', async () => {
+    const viewer = user.value, result = await api('/assignments/' + id + '/dashboard')
+    if (user.value !== viewer) return
+    dashboard.value = result; page.value = 'dashboard'; await scrollTop()
+  })
 }
 async function openFeedback(id) {
   await run('nav', async () => {
-    feedback.value = await api('/assignments/' + id + '/my-feedback')
+    const viewer = user.value, result = await api('/assignments/' + id + '/my-feedback')
+    if (user.value !== viewer) return
+    feedback.value = result
     focusedEvidence.value = null
     page.value = 'feedback'
     await scrollTop()
@@ -353,7 +407,9 @@ function editableReview(saved) {
 
 async function openReview(id) {
   await run('nav', async () => {
-    detail.value = await api('/review-tasks/' + id)
+    const viewer = user.value, result = await api('/review-tasks/' + id)
+    if (user.value !== viewer) return
+    detail.value = result
     const { evidence_anchors, ...fields } = editableReview(detail.value.review || detail.value.draft)
     Object.assign(review, fields)
     selected.value = evidence_anchors
@@ -454,8 +510,12 @@ async function checkAI() {
 async function submitReview() {
   if (readOnly.value) { setNotice('warn', '当前互评阶段已结束，不能提交评价'); return }
   await run('submitReview', async () => {
-    await post('/review-tasks/' + detail.value.id + '/submit', reviewBody())
-    await refresh(); page.value = 'home'; await scrollTop()
+    const viewer = user.value, id = detail.value.id
+    await post('/review-tasks/' + id + '/submit', reviewBody())
+    if (user.value !== viewer) return
+    await refresh()
+    if (user.value !== viewer || page.value !== 'review' || detail.value?.id !== id) return
+    page.value = 'home'; await scrollTop()
   }, '评价已提交，感谢你的认真反馈')
 }
 
@@ -463,6 +523,22 @@ async function submitReview() {
 const percent = (n, d) => d ? Math.round(n / d * 100) + '%' : '—'
 const date = (d) => d ? new Date(d).toLocaleString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
 const joinList = (v) => Array.isArray(v) ? (v.join('；') || '无') : '—'
+function aiQualityTotal(check) {
+  if (check.status !== 'SUCCESS') return null
+  const result = check.result
+  const values = [result?.specificity, result?.evidence_grounding, result?.actionability]
+  return values.every(value => Number.isInteger(value) && value >= 0 && value <= 2)
+    ? values.reduce((total, value) => total + value, 0) : null
+}
+function aiCheckStatus(check) {
+  if (check.status !== 'SUCCESS') return aiStatusText[check.status] ?? '—'
+  if (aiQualityTotal(check) === null) return '结果不可用'
+  return ['LOW', 'MEDIUM', 'HIGH'].includes(check.result.quality_level) ? check.result.quality_level : '检测成功'
+}
+const aiCheckIssues = (result) => Array.isArray(result?.issues)
+  ? result.issues.filter(issue => typeof issue?.type === 'string' && typeof issue?.message === 'string') : []
+const aiCheckSuggestions = (result) => joinList(Array.isArray(result?.suggestions)
+  ? result.suggestions.filter(value => typeof value === 'string') : null)
 const evidenceTargetId = (start) => 'feedback-source-' + start
 function highlighted(content, anchors) {
   const chars = Array.from(content ?? ''), total = chars.length
@@ -619,7 +695,7 @@ onBeforeUnmount(() => {
             </aside>
           </div>
         </template>
-        <template v-else-if="page==='review' && detail"><button class="back" @click="goHome">← 返回任务列表</button><div class="page-heading compact"><div><span class="eyebrow">EVIDENCE-BASED REVIEW</span><h1>认真阅读，具体反馈<span class="heading-dot">.</span></h1><p>{{ detail.assignment.title }}　·　匿名作业 {{ detail.anonymous_code }}</p></div><span class="pill" :class="statusClass(detail.phase)">{{ statusText[detail.phase] }}</span></div><div v-if="readOnly" class="readonly-banner" role="status"><span aria-hidden="true">✓</span> {{ detail.status==='COMPLETED' ? '该互评已提交，以下内容为只读存档，不能修改或重复提交。' : '互评阶段已结束，当前内容仅供查看，不能修改或提交。' }}</div><div class="review-layout"><section class="panel reading"><div class="reading-head"><div><span class="panel-kicker">01 / 阅读原文</span><h2>同伴的作业</h2></div><span class="anonymous">匿名 {{ detail.anonymous_code }}</span></div><div v-if="!readOnly" class="selection-tip" :class="{active: !!selectionInfo, limit: selected.length>=3}" aria-live="polite"><template v-if="selected.length>=3">已添加 3 处证据，达到上限；删除一条后可继续添加。</template><template v-else-if="selectionInfo">✳ 已选中 {{ selectionInfo.length }} 字，可添加为第 {{ selected.length+1 }} 处证据。</template><template v-else>✳　选中一段原文，再点击「添加证据」。</template></div><div class="source-text" ref="source" tabindex="0" role="region" aria-label="作业原文，可选中文字作为证据" @mouseup="readSelection" @keyup="readSelection" @touchend="readSelection"><template v-for="(part,i) in highlighted(detail.content_text,shownEvidence)" :key="part.start"><mark v-if="part.marked">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template></div><button v-if="!readOnly" class="button secondary" type="button" :disabled="isBusy('nav') || !selectionInfo || selected.length>=3" @mousedown.prevent @click="addEvidence">{{ selected.length>=3 ? '已达 3 处证据上限' : '＋ 添加选中内容为证据' }}</button></section><section class="panel review-form"><span class="panel-kicker">02 / 撰写评价</span><h2>你的反馈</h2><p class="subtle">指出具体内容，并提供作者可以执行的建议。</p><form @submit.prevent="submitReview"><fieldset :disabled="readOnly || isBusy('submitReview')"><div class="score-list"><label v-for="(r,i) in detail.assignment.rubric" :key="i"><span>{{ r }} <small>/ 5 分</small></span><select v-model.number="shownReview.scores[i]" :aria-label="r + ' 评分'"><option v-for="n in 6" :key="n" :value="n-1">{{ n-1 }} 分</option></select></label></div><label>做得好的地方 <small>{{ codePoints(shownReview.strengths) }} / 3000</small><textarea v-model="shownReview.strengths" rows="3" maxlength="3000" required placeholder="指出值得保留的具体内容"></textarea></label><label>存在的问题 <small>{{ codePoints(shownReview.weaknesses) }} / 3000</small><textarea v-model="shownReview.weaknesses" rows="3" maxlength="3000" required placeholder="哪些地方还可以更清晰或完整？"></textarea></label><label>改进建议 <small>{{ codePoints(shownReview.suggestions) }} / 3000</small><textarea v-model="shownReview.suggestions" rows="3" maxlength="3000" required placeholder="给出可以执行的下一步"></textarea></label><div class="evidence-head"><strong>原文证据</strong><small class="evidence-count">{{ shownEvidence.length }} / 3</small></div><div v-if="!shownEvidence.length" class="evidence-empty">{{ readOnly ? '无原文证据。' : '从左侧选取原文作为证据。' }}</div><div v-for="(a,i) in shownEvidence" :key="i" class="evidence"><span>“{{ a.quote }}”</span><button v-if="!readOnly" type="button" @click="removeEvidence(i)" title="删除这条证据" aria-label="删除这条证据">×</button></div><div v-if="!readOnly" class="review-actions"><button type="button" class="button secondary" :disabled="isBusy('draft') || isBusy('submitReview')" :aria-busy="isBusy('draft')" @click="saveDraft">{{ isBusy('draft') ? '正在保存…' : '保存草稿' }}</button><button type="button" class="button secondary" :disabled="isBusy('ai') || isBusy('submitReview') || detail.ai_limit_reached" :aria-busy="isBusy('ai')" @click="checkAI">{{ isBusy('ai') ? '✳ 检测中…' : '✳ 检测反馈质量' }}</button><button class="button primary" :disabled="isBusy('submitReview')" :aria-busy="isBusy('submitReview')">{{ isBusy('submitReview') ? '正在提交…' : '提交评价 →' }}</button></div><p v-if="!readOnly && detail.ai_limit_reached" class="hint" role="status">本次互评的 AI 检测额度已用完，你仍可以保存草稿或提交评价。</p><p v-else-if="!readOnly" class="hint">AI 检测可选；检测会将作业摘录、所选证据和评价草稿发送至配置的模型服务。提示不计入作业分数，也不会修改评价。</p></fieldset></form>
+        <template v-else-if="page==='review' && detail"><button class="back" @click="goHome">← 返回任务列表</button><div class="page-heading compact"><div><span class="eyebrow">EVIDENCE-BASED REVIEW</span><h1>认真阅读，具体反馈<span class="heading-dot">.</span></h1><p>{{ detail.assignment.title }}　·　匿名作业 {{ detail.anonymous_code }}</p></div><span class="pill" :class="statusClass(detail.phase)">{{ statusText[detail.phase] }}</span></div><div v-if="readOnly" class="readonly-banner" role="status"><span aria-hidden="true">✓</span> {{ detail.status==='COMPLETED' ? '该互评已提交，以下内容为只读存档，不能修改或重复提交。' : '互评阶段已结束，当前内容仅供查看，不能修改或提交。' }}</div><div class="review-layout"><section class="panel reading"><div class="reading-head"><div><span class="panel-kicker">01 / 阅读原文</span><h2>同伴的作业</h2></div><span class="anonymous">匿名 {{ detail.anonymous_code }}</span></div><div v-if="!readOnly" class="selection-tip" :class="{active: !!selectionInfo, limit: selected.length>=3}" aria-live="polite"><template v-if="selected.length>=3">已添加 3 处证据，达到上限；删除一条后可继续添加。</template><template v-else-if="selectionInfo">✳ 已选中 {{ selectionInfo.length }} 字，可添加为第 {{ selected.length+1 }} 处证据。</template><template v-else>✳　选中一段原文，再点击「添加证据」。</template></div><div class="source-text" ref="source" tabindex="0" role="region" aria-label="作业原文，可选中文字作为证据" @mouseup="readSelection" @keyup="readSelection" @touchend="readSelection"><template v-for="(part,i) in highlighted(detail.content_text,shownEvidence)" :key="part.start"><mark v-if="part.marked">{{ part.text }}</mark><span v-else>{{ part.text }}</span></template></div><button v-if="!readOnly" class="button secondary" type="button" :disabled="isBusy('nav') || !selectionInfo || selected.length>=3" @mousedown.prevent @click="addEvidence">{{ selected.length>=3 ? '已达 3 处证据上限' : '＋ 添加选中内容为证据' }}</button></section><section class="panel review-form"><span class="panel-kicker">02 / 撰写评价</span><h2>你的反馈</h2><p class="subtle">指出具体内容，并提供作者可以执行的建议。</p><form @submit.prevent="submitReview"><fieldset :disabled="readOnly || isBusy('submitReview')"><div class="score-list"><label v-for="(r,i) in detail.assignment.rubric" :key="i"><span>{{ r }} <small>/ 5 分</small></span><select v-model.number="shownReview.scores[i]" :aria-label="r + ' 评分'"><option v-for="n in 6" :key="n" :value="n-1">{{ n-1 }} 分</option></select></label></div><label>做得好的地方 <small>{{ codePoints(shownReview.strengths) }} / 3000</small><textarea v-model="shownReview.strengths" rows="3" maxlength="3000" required placeholder="指出值得保留的具体内容"></textarea></label><label>存在的问题 <small>{{ codePoints(shownReview.weaknesses) }} / 3000</small><textarea v-model="shownReview.weaknesses" rows="3" maxlength="3000" required placeholder="哪些地方还可以更清晰或完整？"></textarea></label><label>改进建议 <small>{{ codePoints(shownReview.suggestions) }} / 3000</small><textarea v-model="shownReview.suggestions" rows="3" maxlength="3000" required placeholder="给出可以执行的下一步"></textarea></label><div class="evidence-head"><strong>原文证据</strong><small class="evidence-count">{{ shownEvidence.length }} / 3</small></div><div v-if="!shownEvidence.length" class="evidence-empty">{{ readOnly ? '无原文证据。' : '从左侧选取原文作为证据。' }}</div><div v-for="(a,i) in shownEvidence" :key="i" class="evidence"><span>“{{ a.quote }}”</span><button v-if="!readOnly" type="button" @click="removeEvidence(i)" title="删除这条证据" aria-label="删除这条证据">×</button></div><div v-if="!readOnly" class="review-actions"><button type="button" class="button secondary" :disabled="isBusy('draft') || isBusy('submitReview')" :aria-busy="isBusy('draft')" @click="saveDraft">{{ isBusy('draft') ? '正在保存…' : '保存草稿' }}</button><button type="button" class="button secondary" :disabled="isBusy('ai') || isBusy('submitReview') || detail.ai_limit_reached" :aria-busy="isBusy('ai')" @click="checkAI">{{ isBusy('ai') ? '✳ 检测中…' : '✳ 检测反馈质量' }}</button><button class="button primary" :disabled="isBusy('submitReview')" :aria-busy="isBusy('submitReview')">{{ isBusy('submitReview') ? '正在提交…' : '提交评价 →' }}</button></div><p v-if="!readOnly && detail.ai_limit_reached" class="hint" role="status">本次互评的 AI 检测额度已用完（最多 3 次，含失败及超时），你仍可以保存草稿或提交评价。</p><p v-else-if="!readOnly" class="hint">AI 检测可选；每条互评最多调用 3 次（含失败及超时）。<template v-if="Number.isInteger(detail.ai_attempts_remaining)">剩余 {{ detail.ai_attempts_remaining }} 次。</template>检测会将作业摘录、所选证据和评价草稿发送至配置的模型服务。提示不计入作业分数，也不会修改评价。</p></fieldset></form>
           <details v-if="hasUnsentReview" class="unsent-draft">
             <summary>未提交的评价草稿</summary>
             <p class="inline-meta">{{ detail.assignment.rubric.map((label, i) => label + ' ' + review.scores[i] + '/5').join(' · ') }}</p>
@@ -665,7 +741,20 @@ onBeforeUnmount(() => {
               </li>
             </ul>
           </section>
-          <section class="panel detail-panel"><div class="panel-kicker">QUALITY INSIGHTS</div><h2>反馈质量检测</h2><p class="subtle">共发起 {{ dashboard.ai_call_count }} 次检测（成功 {{ dashboard.ai_success_count }} 次 / 失败 {{ dashboard.ai_failed_count }} 次 / 检测中 {{ dashboard.ai_running_count }} 次）· 低 {{ dashboard.ai_levels.LOW }} · 中 {{ dashboard.ai_levels.MEDIUM }} · 高 {{ dashboard.ai_levels.HIGH }}。只有与最终评价内容一致的检测结果计入等级。</p><p class="hint">存在 {{ dashboard.ai_paired_count }} 组评语发生变化的前后草稿检测（草稿差异检测，不构成实验配对数据）；平均变化 {{ dashboard.ai_paired_mean_change === null ? "—" : dashboard.ai_paired_mean_change.toFixed(1) }} 分。模型评分仅供参考，不能代替人工实验；正式效果验证须按 docs/experiment.md 组织人工盲评。</p><div class="tags"><span v-for="(count,key) in dashboard.ai_issue_counts" :key="key">{{ key }} · {{ count }}</span></div></section><section class="section"><div class="section-title"><div><span class="eyebrow">SUBMISSIONS</span><h2>作业与评价 <span>{{ dashboard.records.length }}</span></h2></div></div><div v-if="!dashboard.records.length" class="empty">尚无学生提交作业，暂无可查看的互评记录。</div><details v-for="record in dashboard.records" :key="record.submission_id" class="panel record"><summary><strong>{{ record.student_name }}</strong><span v-if="record.summary.high_disagreement" class="pill purple">高分歧，建议复核</span><span>{{ record.summary.incomplete ? '评价数量不足' : '平均 '+(record.summary.average_total ?? '—')+' / 15' }}</span></summary><div class="record-body"><h3>作业正文</h3><p class="prose">{{ record.content_text }}</p><div v-for="r in record.reviews" :key="r.id" class="record-review"><strong>评审：{{ r.reviewer_name }} · {{ statusText[r.phase] }}</strong><template v-if="r.review"><p>得分：{{ (r.review.scores||[]).join(' / ') }}（总分 {{ r.review.total_score }}）</p><p>优点：{{ r.review.strengths }}</p><p>问题：{{ r.review.weaknesses }}</p><p>建议：{{ r.review.suggestions }}</p><div v-for="a in (r.review.evidence_anchors||[])" :key="a.start" class="evidence">“{{ a.quote }}”</div></template><details v-for="(c,i) in r.ai_checks" :key="i" class="check-record"><summary>检测草稿 {{ i+1 }} · {{ date(c.created_at) }} · {{ c.status==='SUCCESS' ? (c.result?.quality_level ?? '—') : (aiStatusText[c.status] ?? '—') }}</summary><p>优点：{{ c.input_data?.review?.strengths ?? '—' }}</p><p>问题：{{ c.input_data?.review?.weaknesses ?? '—' }}</p><p>建议：{{ c.input_data?.review?.suggestions ?? '—' }}</p><p>证据：{{ joinList(c.input_data?.evidence_quotes) }}</p><p v-if="c.result">质量提示：{{ joinList(c.result?.suggestions) }}</p></details></div></div></details></section></template>
+          <section class="panel detail-panel"><div class="panel-kicker">QUALITY INSIGHTS</div><h2>反馈质量检测</h2><p class="subtle">共发起 {{ dashboard.ai_call_count }} 次检测（成功 {{ dashboard.ai_success_count }} 次 / 失败 {{ dashboard.ai_failed_count }} 次 / 检测中 {{ dashboard.ai_running_count }} 次）· 低 {{ dashboard.ai_levels.LOW }} · 中 {{ dashboard.ai_levels.MEDIUM }} · 高 {{ dashboard.ai_levels.HIGH }}。只有与最终评价内容一致的检测结果计入等级。</p><p class="hint">存在 {{ dashboard.ai_paired_count }} 组评语发生变化的前后草稿检测（草稿差异检测，不构成实验配对数据）；平均变化 {{ dashboard.ai_paired_mean_change === null ? "—" : dashboard.ai_paired_mean_change.toFixed(1) }} 分。模型评分仅供参考，不能代替人工实验；正式效果验证须按 docs/experiment.md 组织人工盲评。</p><div class="tags"><span v-for="(count,key) in dashboard.ai_issue_counts" :key="key">{{ key }} · {{ count }}</span></div></section><section class="section"><div class="section-title"><div><span class="eyebrow">SUBMISSIONS</span><h2>作业与评价 <span>{{ dashboard.records.length }}</span></h2></div></div><div v-if="!dashboard.records.length" class="empty">尚无学生提交作业，暂无可查看的互评记录。</div><details v-for="record in dashboard.records" :key="record.submission_id" class="panel record"><summary><strong>{{ record.student_name }}</strong><span v-if="record.summary.high_disagreement" class="pill purple">高分歧，建议复核</span><span>{{ record.summary.incomplete ? '评价数量不足' : '平均 '+(record.summary.average_total ?? '—')+' / 15' }}</span></summary><div class="record-body"><h3>作业正文</h3><p class="prose">{{ record.content_text }}</p><div v-for="r in record.reviews" :key="r.id" class="record-review"><strong>评审：{{ r.reviewer_name }} · {{ statusText[r.phase] }}</strong><template v-if="r.review"><p>得分：{{ (r.review.scores||[]).join(' / ') }}（总分 {{ r.review.total_score }}）</p><p>优点：{{ r.review.strengths }}</p><p>问题：{{ r.review.weaknesses }}</p><p>建议：{{ r.review.suggestions }}</p><div v-for="a in (r.review.evidence_anchors||[])" :key="a.start" class="evidence">“{{ a.quote }}”</div></template><details v-for="(c,i) in r.ai_checks" :key="i" class="check-record">
+                <summary>检测草稿 {{ i+1 }} · {{ date(c.created_at) }} · {{ aiCheckStatus(c) }}</summary>
+                <p>优点：{{ c.input_data?.review?.strengths ?? '—' }}</p>
+                <p>问题：{{ c.input_data?.review?.weaknesses ?? '—' }}</p>
+                <p>建议：{{ c.input_data?.review?.suggestions ?? '—' }}</p>
+                <p>证据：{{ joinList(c.input_data?.evidence_quotes) }}</p>
+                <template v-if="aiQualityTotal(c) !== null">
+                  <p>质量分：{{ aiQualityTotal(c) }} / 6（具体性 {{ c.result.specificity }}/2　依据性 {{ c.result.evidence_grounding }}/2　可操作性 {{ c.result.actionability }}/2）</p>
+                  <p v-if="!aiCheckIssues(c.result).length">AI 检测问题：无</p>
+                  <p v-for="(issue,j) in aiCheckIssues(c.result)" :key="j">AI 检测问题：{{ issue.type }} · {{ issue.message }}</p>
+                  <p>质量提示：{{ aiCheckSuggestions(c.result) }}</p>
+                </template>
+                <p v-else-if="c.status === 'SUCCESS'">该历史检测无可用质量结果。</p>
+              </details></div></div></details></section></template>
       </div>
     </main>
   </div>

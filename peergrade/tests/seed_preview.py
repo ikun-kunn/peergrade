@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault('DATABASE_URL', 'sqlite:///./preview.db')
 from app import engine, SessionLocal, password_hash
-from models import Base, User, Assignment, Member, Submission, ReviewTask, Review
+from models import User, Assignment, Member, Submission, ReviewTask, Review
+from db_migrations import upgrade_database
 from domain import allocate, content_hash, score_review
 
 RUBRIC = ['内容完整性', '逻辑与表达', '分析与创新']
@@ -64,7 +65,7 @@ def add_example(db, teacher, students, title, description, status, submit_days, 
 def main():
     if engine.dialect.name != 'sqlite' or os.getenv('APP_ENV', '').lower() == 'production':
         raise SystemExit('Preview fixtures require a local development SQLite database.')
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     with SessionLocal.begin() as db:
         teacher = db.query(User).filter_by(username='preview_teacher').first()
         if teacher is None:

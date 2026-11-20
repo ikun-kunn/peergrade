@@ -19,13 +19,17 @@ docker compose logs --tail=80 init web proxy
 docker compose exec web python manage.py create-user teacher 教师 TEACHER
 ```
 
-`db` 就绪后，`init` 建表并退出；`web` 健康检查通过后代理才启动。新教师密码交互输入，使用独立强密码。学生通过页面自行注册，由教师加入任务。
+`db` 就绪后，`init` 执行版本迁移并退出；`web` 健康检查确认当前数据库版本后代理才启动。新教师密码交互输入，使用独立强密码。学生通过页面自行注册，由教师加入任务。
 
 在真实域名访问 `/healthz` 后，用独立浏览器按照发布清单走完教师建任务、学生提交、匿名互评、发布反馈、查看证据的流程。额外确认手机端、HTTPS 证书、代理转发和登录限流；仅有容器健康不代表业务完整。不要在生产日志或截图中保留明文密码、会话值、作业文本或模型密钥。
 
 ## 3. 数据升级、备份与退出策略
 
-当前 `manage.py init-db` 只负责创建尚不存在的表，**不是历史表结构迁移工具**。首次上线使用空库；后续模型字段或约束变更，应先在独立的测试库制作、审核迁移步骤并恢复旧版本备份进行验证，不能让 `create_all` 悄悄代替升级。
+数据库现在由 Alembic 管理。`manage.py db-status` 检查表结构并报告当前版本；`manage.py upgrade-db` 创建空库、接管结构完全匹配的未版本化旧库，并按顺序执行待处理版本。旧命令 `init-db` 是兼容别名，不再直接调用当前模型的 `create_all`。
+
+目前版本链为 `0001_initial`（旧版核心表）→ `0002_review_drafts`（新增草稿表）。接管已有数据库前先备份。缺表、错误字段、约束或未知版本会使迁移失败；不要手工修改 `alembic_version` 或绕过校验。支持 SQLite 与 PostgreSQL；版本记录和结构迁移处于同一事务内。首次上线可直接使用空库。
+
+后续字段或约束变更，应新增 Alembic revision，保留旧版本定义不变，并更新 `db_migrations.py` 中的当前版本和对应结构校验；先在独立测试库从上一个版本升级，核对旧业务数据及恢复能力，再更新生产环境。不要使用自动生成的迁移作为未经审核的上线脚本。当前不支持破坏性降级，退回旧版本时按经验证的备份恢复流程处理。
 
 每次更新前，先停止写入流量或安排维护窗口，并从运行环境备份当前数据库到受保护的私有目录。以下示例在 Linux 服务器使用独立文件名，且不覆盖已有归档：
 
@@ -35,6 +39,19 @@ docker compose exec -T db pg_dump -U peergrade -d peergrade -Fc > "peergrade-$(d
 ```
 
 检查命令退出状态及备份文件，另存到具有访问控制的独立存储。不得把归档放到静态网页目录、Git 仓库或公共链接。先用 `tests.check_restore` 在专用测试库演练真实 `pg_dump` / `pg_restore` 并核验业务数据，生产恢复则应另建恢复数据库，在隔离的应用实例中验证，再由运营者按变更计划切换。不要直接覆盖在线数据库、不要执行 `docker compose down -v` 来部署更新。
+
+完成目标版本的测试库演练、安排维护窗口并备份后，在服务器执行以下更新步骤（迁移失败时停止，不继续启动新应用）：
+
+```bash
+docker compose stop proxy web
+docker compose build init web
+docker compose run --rm init python manage.py db-status
+docker compose run --rm init
+docker compose up -d web proxy
+docker compose exec web python manage.py db-status
+```
+
+确认状态为 `versioned` 且实际版本与目标版本相同，再完成真实域名的业务与健康检查。迁移不负责自动覆盖或清理不兼容的数据库。
 
 若更新失败，先保留故障日志和当前备份，使用此前验证通过的应用版本及兼容数据库；涉及表结构变化时，按照对应迁移及恢复计划处理。定期核对备份恢复能力、账号有效性、密码和密钥轮换。实验结束后按知情同意和学校要求规定的数据保存期限清理作业、评语、AI 记录、日志及备份；实际保存策略由运营者负责确认与执行。
 

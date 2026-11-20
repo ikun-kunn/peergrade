@@ -16,13 +16,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import create_engine, select, func, text as sql_text, delete, event, inspect
+from sqlalchemy import create_engine, select, func, text as sql_text, delete, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from domain import (allocate, content_hash, feedback_summary, quality_level, score_review,
                     validate_ai_result, validate_anchors)
 from ai_service import MODEL_TIMEOUT_SECONDS, evaluate_quality
+from db_migrations import database_ready, upgrade_database
 from models import Base, User, Session, Assignment, Member, Submission, ReviewTask, ReviewDraft, Review, AICheck, RateBucket
 
 MAX_SUBMISSION_CHARS = 10000
@@ -30,10 +31,9 @@ MAX_SUBMISSION_CHARS = 10000
 # 超过 10000（QA 实测 13509 字符）。在线输入仍限 10000，PDF 提取文本单独放宽到 30000。
 MAX_PDF_CHARS = 30000
 MIN_REVIEW_SUBMISSIONS = 3
-AI_SUCCESS_LIMIT = 3
-AI_ATTEMPT_LIMIT = 9
-# Give a bounded request time to save its result. Interrupted workers release
-# their success slot after this interval, while the reserved attempt still counts.
+AI_ATTEMPT_LIMIT = 3
+# A reserved model request permanently consumes one attempt. This deadline is
+# only for classifying an interrupted worker's unfinished result as failed.
 AI_RESERVATION_TTL = timedelta(seconds=2 * MODEL_TIMEOUT_SECONDS)
 
 
@@ -100,11 +100,11 @@ if (frontend_dist / 'assets').is_dir():
 def healthz():
     try:
         with engine.connect() as connection:
-            ready = set(Base.metadata.tables).issubset(inspect(connection).get_table_names())
+            ready = database_ready(connection)
     except Exception:
         ready = False
     if not ready:
-        fail(503, '数据库未就绪，请先执行 python manage.py init-db')
+        fail(503, '数据库未就绪，请先执行 python manage.py upgrade-db')
     return {'status': 'ok'}
 
 
@@ -258,9 +258,12 @@ class Registration(Login):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
-    if request.url.path.rstrip('/') == '/api/auth/register':
+    path = request.url.path.rstrip('/')
+    if path == '/api/auth/register':
         # FastAPI 的默认错误体可能回显整个请求或密码字段。
         return JSONResponse(status_code=422, content={'detail': '请检查注册字段：名称为 1–100 字符，密码为 12–256 字符'})
+    if path == '/api/auth/login':
+        return JSONResponse(status_code=422, content={'detail': '请检查登录字段：用户名为 1–100 字符，密码为 1–256 字符'})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -612,12 +615,8 @@ def review_tasks(db: DB, actor: Actor):
             for task, item in tasks]
 
 
-def ai_usage(db, task_id, now):
-    return db.execute(
-        select(func.count(), func.count().filter(AICheck.status == 'SUCCESS'),
-               func.count().filter(AICheck.status == 'RUNNING', AICheck.created_at > now - AI_RESERVATION_TTL))
-        .select_from(AICheck).where(AICheck.review_task_id == task_id)
-    ).one()
+def ai_attempt_count(db, task_id):
+    return db.scalar(select(func.count()).select_from(AICheck).where(AICheck.review_task_id == task_id))
 
 
 def ai_attempt_status(check, now):
@@ -634,10 +633,11 @@ def review_task(task_id: str, db: DB, actor: Actor):
     draft = db.scalar(select(ReviewDraft).where(ReviewDraft.review_task_id == task.id))
     has_pending = db.scalar(select(review_exists(item.id, pending=True)))
     now = datetime.now(timezone.utc)
-    attempts, successes, _ = ai_usage(db, task.id, now)
+    attempts = ai_attempt_count(db, task.id)
     return {'id': task.id, 'assignment': assignment_json(item, now, has_pending), **review_task_state(task, item, now),
             'anonymous_code': submission.id[:8].upper(), 'content_text': submission.content_text,
-            'ai_limit_reached': attempts >= AI_ATTEMPT_LIMIT or successes >= AI_SUCCESS_LIMIT,
+            'ai_limit_reached': attempts >= AI_ATTEMPT_LIMIT,
+            'ai_attempts_remaining': max(0, AI_ATTEMPT_LIMIT - attempts),
             'content_hash': submission.content_hash,
             'review': review_json(review) if review else None, 'draft': draft.content if draft and not review else None}
 
@@ -739,11 +739,8 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
     now = datetime.now(timezone.utc)
     if not review_is_writable(task, item, now):
         fail(409, '当前不能检测该评价')
-    attempts, successes, running = ai_usage(db, task.id, now)
-    if successes >= AI_SUCCESS_LIMIT or attempts >= AI_ATTEMPT_LIMIT:
+    if ai_attempt_count(db, task.id) >= AI_ATTEMPT_LIMIT:
         fail(429, '该互评的 AI 检测额度已用完，仍可直接提交评价')
-    if successes + running >= AI_SUCCESS_LIMIT:
-        fail(429, '已有检测正在处理，请等待结果，也可以直接提交评价')
     key, url, model = os.getenv('AI_API_KEY'), os.getenv('AI_API_URL'), os.getenv('AI_MODEL')
     if not all((key, url, model)):
         fail(503, 'AI 检测暂不可用，您仍可直接提交评价')
@@ -778,7 +775,7 @@ async def ai_check(task_id: str, data: ReviewInput, db: DB, actor: Actor):
 
     lock_assignment(db, task.assignment_id)
     db.refresh(check)
-    # An expired request cannot publish a result after its slot has been reused.
+    # An expired request cannot publish a result; its attempt remains counted.
     if ai_attempt_status(check, datetime.now(timezone.utc)) != 'RUNNING':
         result = None
     check.status, check.result = ('SUCCESS' if result is not None else 'FAILED'), result
@@ -931,8 +928,8 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
 
 if __name__ == '__main__':
     # 自包含启动入口：部署平台只提供单个 HTTP 端口，并通过 PORT 环境变量注入。
-    # 先建表避免接口因缺表全部 500，再监听 0.0.0.0:PORT（未注入时用 3000）。
+    # 在启动前运行版本迁移，拒绝启动使用不兼容的数据库。
     import uvicorn
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     port = int(os.getenv('PORT', '3000'))
     uvicorn.run(app, host='0.0.0.0', port=port)

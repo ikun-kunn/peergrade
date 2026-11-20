@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app import app, engine, SessionLocal  # noqa: E402
+from db_migrations import upgrade_database  # noqa: E402
 from domain import (  # noqa: E402
     allocate, content_hash, feedback_summary, quality_level,
     validate_ai_result, validate_anchors,
@@ -154,8 +155,8 @@ class RegressionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # create_all 幂等：与 test_api.py 共用库时不会破坏其表或数据。
-        Base.metadata.create_all(engine)
+        # 与 test_api.py 共用库时，重复迁移不改变已有数据。
+        upgrade_database(engine)
 
     def setUp(self):
         self.tag = uuid.uuid4().hex[:10]
@@ -846,9 +847,14 @@ class RegressionTests(unittest.TestCase):
         self.setup_submissions(aid)
         self.start_ok(aid)
         task = self.tasks('s1', aid)[0]
-        with patch.dict(os.environ, {'AI_API_KEY': '', 'AI_API_URL': '', 'AI_MODEL': ''}):
+        model = AsyncMock(return_value=ai_result())
+        with patch.dict(os.environ, {'AI_API_KEY': '', 'AI_API_URL': '', 'AI_MODEL': ''}), \
+             patch('app.evaluate_quality', new=model):
             self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/ai-check',
                                                json=self.body()).status_code, 503)
+        self.assertEqual(model.await_count, 0)
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 3)
+        self.assertEqual(self.c('teacher').get(f'/api/assignments/{aid}/dashboard').json()['ai_call_count'], 0)
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_ai_timeout_still_allows_review_submission(self):
@@ -861,6 +867,8 @@ class RegressionTests(unittest.TestCase):
              patch('app.evaluate_quality', new=AsyncMock(side_effect=asyncio.TimeoutError)):
             self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/ai-check',
                                                json=self.body()).status_code, 503)
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 2)
+        self.assertEqual(self.c('teacher').get(f'/api/assignments/{aid}/dashboard').json()['ai_failed_count'], 1)
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_ai_three_call_limit(self):
@@ -873,11 +881,13 @@ class RegressionTests(unittest.TestCase):
         env = {'AI_API_KEY': 'test', 'AI_API_URL': 'https://example.test', 'AI_MODEL': 'test'}
         model = AsyncMock(side_effect=[ai_result(scores=scores) for scores in [(0, 0, 0), (1, 1, 1), (2, 2, 2)]])
         self.assertFalse(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 3)
         with patch.dict(os.environ, env), patch('app.evaluate_quality', new=model):
-            for level, strengths in [('LOW', '挺好'), ('MEDIUM', '案例切题，但论据不足'), ('HIGH', '引用具体，并提出了可验证的改进方法')]:
+            for index, (level, strengths) in enumerate([('LOW', '挺好'), ('MEDIUM', '案例切题，但论据不足'), ('HIGH', '引用具体，并提出了可验证的改进方法')], 1):
                 outcome = self.c('s1').post(endpoint, json=self.body(strengths=strengths))
                 self.assertEqual(outcome.status_code, 200, outcome.text)
                 self.assertEqual(outcome.json()['quality_level'], level)
+                self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 3 - index)
             self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 429)
         self.assertEqual(model.await_count, 3)
         for call in model.await_args_list:
@@ -922,10 +932,12 @@ class RegressionTests(unittest.TestCase):
         detail = self.detail('s1', task['id'])
         forged = [{**self.anchor(detail, 0, 5), 'quote': '伪造片段'}]
         env = {'AI_API_KEY': 'test', 'AI_API_URL': 'https://example.test', 'AI_MODEL': 'test'}
-        with patch.dict(os.environ, env), \
-             patch('app.evaluate_quality', new=AsyncMock(return_value=ai_result())):
+        model = AsyncMock(return_value=ai_result())
+        with patch.dict(os.environ, env), patch('app.evaluate_quality', new=model):
             self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/ai-check',
                                                json=self.body(anchors=forged)).status_code, 422)
+        self.assertEqual(model.await_count, 0)
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 3)
         with SessionLocal() as db:
             self.assertEqual(len(list(db.scalars(select(AICheck).where(
                 AICheck.review_task_id == task['id'])))), 0)
@@ -987,21 +999,20 @@ class RegressionTests(unittest.TestCase):
 
 
 class AdjudicatedFixTests(unittest.TestCase):
-    """主理人裁决后『即将落地』修复的回归用例（本轮新增，9 条）。
+    """主理人裁决及后续 TRD 口径确认后的回归用例。
 
     断言一律按裁决后的契约书写，**不迁就当前旧行为**：
       1. AI 未配置时 ai-check 仍先做权限/状态检查（P1-1）；
-      2. 3 次上限只数 SUCCESS，新增 ai_failed_count（P1-2）；
+      2. TRD 4.4：最多 3 次总调用，包含失败与超时，保留 ai_failed_count；
       3. 配对只比较 input_data['review']（P1-3）；
       4. 在线输入 10000 / PDF 提取 30000 双上限（P1-4）；
       5. 看板按三维度重算 quality_level（P1-6 / TRD 4.3）；
       6. 过期 SUBMITTING 可直接 close（死锁逃生口）；
       7. healthz 在关键表缺失时不返回 200（P0-1 就绪探测）；
-      8. 8 并发 ai-check 时 SUCCESS 不超过 3 条（方案 A：回写前二次加锁复查，
-         HTTPException 不得被 except Exception 吞成 503）；
+      8. 8 并发 ai-check 时最多预留 3 次总模型调用，失败也不释放额度；
       9. 看板单条 records[].reviews[].ai_checks[].result.quality_level 同样由服务端
          净化重算（clean_ai_result 接入），区别于第 5 条只断言聚合 ai_levels。
-    源码全部落地后本类应全绿；落地前允许临时失败，不因此下调断言或修改源码。
+    源码全部落地后本类应全绿；仅依据明确确认的需求调整契约。
 
     本类使用与 RegressionTests 同构但**独立**的 fixture（独立 uuid 前缀账号/任务），
     不改动既有 52 条用例，也不与 test_api.py 的数据相互污染。
@@ -1009,7 +1020,7 @@ class AdjudicatedFixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        Base.metadata.create_all(engine)
+        upgrade_database(engine)
 
     def setUp(self):
         self.tag = uuid.uuid4().hex[:10]
@@ -1155,8 +1166,8 @@ class AdjudicatedFixTests(unittest.TestCase):
             response = self.c('s1').post(url, json=body)
         self.assertEqual(response.status_code, 409, response.text)
 
-    def test_adjudicated_02_failed_checks_do_not_consume_success_quota(self):
-        """P1-2：3 次上限只数 SUCCESS；新增 ai_failed_count；ai_call_count 仍为总尝试数。"""
+    def test_adjudicated_02_failed_checks_consume_total_quota(self):
+        """用户确认 TRD 4.4：前三次失败也会耗尽总调用额度。"""
         aid = self.created()
         self.setup_submissions(aid)
         self.start_ok(aid)
@@ -1166,13 +1177,33 @@ class AdjudicatedFixTests(unittest.TestCase):
         mock = AsyncMock(side_effect=[ValueError('bad json')] * 3 + [ai_result()])
         with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=mock):
             codes = [self.c('s1').post(url, json=body).status_code for _ in range(4)]
-        self.assertEqual(codes[:3], [503, 503, 503], codes)
-        self.assertNotEqual(codes[3], 429, f'3 次 FAILED 不应挡住第 4 次：{codes}')
-        self.assertEqual(codes[3], 200, f'第 4 次应能成功检测：{codes}')
+        self.assertEqual(codes, [503, 503, 503, 429], codes)
+        self.assertEqual(mock.await_count, 3)
+        self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 0)
         data = self.dashboard(aid)
-        self.assertIn('ai_failed_count', data, '看板缺少 ai_failed_count 字段')
         self.assertEqual(data['ai_failed_count'], 3)
-        self.assertEqual(data['ai_call_count'], 4)
+        self.assertEqual(data['ai_call_count'], 3)
+        self.assertEqual(data['ai_success_count'], 0)
+        self.assertEqual(data['ai_running_count'], 0)
+        self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=body).status_code, 200)
+        self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
+
+    def test_mixed_success_timeout_and_invalid_output_consume_three_attempts(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
+        model = AsyncMock(side_effect=[ai_result(), asyncio.TimeoutError(), ValueError('invalid JSON'), ai_result()])
+        with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=model):
+            codes = [self.c('s1').post(endpoint, json=self.body()).status_code for _ in range(4)]
+        self.assertEqual(codes, [200, 503, 503, 429])
+        self.assertEqual(model.await_count, 3)
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 0)
+        stats = self.dashboard(aid)
+        self.assertEqual((stats['ai_call_count'], stats['ai_success_count'], stats['ai_failed_count']), (3, 1, 2))
+        self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_adjudicated_03_pairing_only_counts_review_text_changes(self):
         """P1-3：两次检测之间只改证据（评语三段完全相同）不应产生配对记录。"""
@@ -1317,6 +1348,14 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in client.get('/api/assignments').json()], [assigned])
         self.assertEqual(client.post(f'/api/assignments/{assigned}/start-review').status_code, 404)
 
+    def test_login_validation_does_not_echo_password(self):
+        client = TestClient(app)
+        response = client.post('/api/auth/login', json={
+            'username': 'test_student', 'password': 'example-password-' * 20,
+        })
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn('example-password-', response.text)
+
     def test_extension_reopens_submissions_and_expires_pending_reviews(self):
         aid = self.created(students=('s1', 's2', 's3', 's4', 'outsider'))
         path = f'/api/assignments/{aid}'
@@ -1376,11 +1415,13 @@ class AdjudicatedFixTests(unittest.TestCase):
             with patch('app.engine', empty_engine):
                 self.assertEqual(client.get('/healthz').status_code, 503)
                 Base.metadata.create_all(empty_engine)
+                self.assertEqual(client.get('/healthz').status_code, 503)
+                upgrade_database(empty_engine)
                 self.assertEqual(client.get('/healthz').status_code, 200)
         finally:
             empty_engine.dispose()
 
-    def test_adjudicated_08_concurrent_ai_checks_reserve_three_model_calls(self):
+    def assert_concurrent_ai_limit(self, *, failing):
         aid = self.created()
         self.setup_submissions(aid)
         self.start_ok(aid)
@@ -1396,6 +1437,8 @@ class AdjudicatedFixTests(unittest.TestCase):
                 reserved.set()
             if not await asyncio.to_thread(complete.wait, 10):
                 raise TimeoutError()
+            if failing:
+                raise asyncio.TimeoutError()
             return ai_result('LOW', (0, 0, 0))
 
         model = AsyncMock(side_effect=slow_result)
@@ -1415,18 +1458,28 @@ class AdjudicatedFixTests(unittest.TestCase):
                     self.assertEqual(stats['ai_running_count'], 3)
                     self.assertEqual(stats['ai_failed_count'], 0)
                     self.assertEqual(stats['ai_success_count'], 0)
+                    self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 0)
+                    self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
                 finally:
                     complete.set()
                 codes = [future.result() for future in futures]
-        self.assertCountEqual(codes, [200] * 3 + [429] * 5)
+            self.assertEqual(self.c('s1').post(url, json=body).status_code, 429)
+        self.assertCountEqual(codes, [503 if failing else 200] * 3 + [429] * 5)
         self.assertEqual(model.await_count, 3)
         stats = self.dashboard(aid)
         self.assertEqual(stats['ai_running_count'], 0)
-        self.assertEqual(stats['ai_failed_count'], 0)
-        self.assertEqual(stats['ai_success_count'], 3)
+        self.assertEqual(stats['ai_failed_count'], 3 if failing else 0)
+        self.assertEqual(stats['ai_success_count'], 0 if failing else 3)
+        self.assertEqual(stats['ai_call_count'], 3)
         self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
 
-    def test_expired_model_reservations_release_success_slots_but_still_count_as_attempts(self):
+    def test_adjudicated_08_concurrent_ai_checks_reserve_three_model_calls(self):
+        self.assert_concurrent_ai_limit(failing=False)
+
+    def test_concurrent_failed_model_calls_do_not_refund_quota(self):
+        self.assert_concurrent_ai_limit(failing=True)
+
+    def test_expired_model_reservations_still_consume_attempts(self):
         aid = self.created()
         self.setup_submissions(aid)
         self.start_ok(aid)
@@ -1435,17 +1488,39 @@ class AdjudicatedFixTests(unittest.TestCase):
         with SessionLocal.begin() as db:
             db.add_all(AICheck(review_task_id=task['id'], input_hash='0' * 64, input_data={},
                                status='RUNNING', result=None, created_at=now() - timedelta(minutes=1))
-                       for _ in range(8))
+                       for _ in range(2))
         stats = self.dashboard(aid)
-        self.assertEqual(stats['ai_failed_count'], 8)
+        self.assertEqual(stats['ai_failed_count'], 2)
         self.assertEqual(stats['ai_running_count'], 0)
         self.assertFalse(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 1)
         model = AsyncMock(return_value=ai_result())
         with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=model):
             self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 200)
             self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 429)
         self.assertEqual(model.await_count, 1)
         self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 0)
+        self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
+
+    def test_legacy_over_quota_history_is_preserved_and_new_calls_rejected(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
+        with SessionLocal.begin() as db:
+            db.add_all(AICheck(review_task_id=task['id'], input_hash='0' * 64, input_data={},
+                               status='FAILED', result=None, created_at=now() - timedelta(minutes=1))
+                       for _ in range(8))
+        self.assertTrue(self.detail('s1', task['id'])['ai_limit_reached'])
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 0)
+        model = AsyncMock(return_value=ai_result())
+        with patch.dict(os.environ, self.ai_env()), patch('app.evaluate_quality', new=model):
+            self.assertEqual(self.c('s1').post(endpoint, json=self.body()).status_code, 429)
+        self.assertEqual(model.await_count, 0)
+        stats = self.dashboard(aid)
+        self.assertEqual((stats['ai_call_count'], stats['ai_failed_count']), (8, 8))
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_adjudicated_09_dashboard_single_ai_check_level_is_purified(self):
