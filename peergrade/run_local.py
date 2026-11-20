@@ -25,9 +25,9 @@ def main():
             parser.error('No API key provided. Run without --deepseek to use manual review.')
         os.environ.update(AI_API_KEY=key.strip(), AI_API_URL=DEEPSEEK_API_URL, AI_MODEL=DEEPSEEK_MODEL)
     from app import app, engine
-    from models import Base
+    from db_migrations import upgrade_database
 
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     uvicorn.run(app, host='127.0.0.1', port=args.port)
 
 

@@ -99,10 +99,11 @@ def restore_postgres(source, scratch, dump, restore):
 
 
 def seed_assignment(application):
-    from models import Assignment, Base, User
+    from models import Assignment, User
+    from db_migrations import upgrade_database
     from tests.seed_preview import add_example
 
-    Base.metadata.create_all(application.engine)
+    upgrade_database(application.engine)
     digest = application.password_hash(PASSWORD)
     with application.SessionLocal.begin() as db:
         teacher = User(username='restore_teacher', display_name='演示教师', role='TEACHER', password_hash=digest)

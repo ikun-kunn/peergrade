@@ -20,10 +20,11 @@ PASSWORD = 'local release fixture password'
 def run_load(rounds):
     configure_test_database()
     from app import app, engine, SessionLocal, password_hash
-    from models import Assignment, Base, User
+    from models import Assignment, User
+    from db_migrations import upgrade_database
     from tests.seed_preview import add_example
 
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     digest = password_hash(PASSWORD)
     with SessionLocal.begin() as db:
         teacher = User(username='release_teacher', display_name='演示教师', role='TEACHER', password_hash=digest)

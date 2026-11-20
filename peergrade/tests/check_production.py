@@ -15,9 +15,9 @@ def main():
     origin = 'https://peergrade.example.invalid'
     os.environ.update(APP_ENV='production', PUBLIC_ORIGIN=origin, COOKIE_SECURE='true')
     from app import app, engine
-    from models import Base
+    from db_migrations import upgrade_database
 
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     password = 'local production smoke password'
     with TestClient(app, base_url=origin) as client:
         client.get('/healthz').raise_for_status()

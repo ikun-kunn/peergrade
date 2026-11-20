@@ -9,6 +9,7 @@ const pending = reactive({}) // 按操作名记录请求中状态，避免一次
 const busy = computed(() => Object.values(pending).some(Boolean))
 const isBusy = (key) => !!pending[key]
 let actionVersion = 0
+let sessionVersion = 0
 
 const assignments = ref([]), tasks = ref([]), students = ref([])
 const active = ref(null), detail = ref(null), dashboard = ref(null), feedback = ref(null)
@@ -55,12 +56,30 @@ function assignmentStatus(item) {
 const pageLabel = { home: '我的任务', create: '创建任务', assignment: '任务详情', review: '撰写互评', feedback: '收到的反馈', dashboard: '教师看板' }
 const codePoints = (s) => Array.from(s ?? '').length
 
+// Keep deferred requests bound to the account that initiated them. A response from
+// a previous session must never restore a private assignment or review after logout.
+function clearWorkspace() {
+  sessionVersion++
+  actionVersion++
+  for (const key of Object.keys(pending)) delete pending[key]
+  user.value = null; assignments.value = []; tasks.value = []; students.value = []
+  active.value = detail.value = dashboard.value = feedback.value = null
+  selectionInfo.value = quality.value = focusedEvidence.value = pdf.value = null
+  text.value = ''; selected.value = []
+  Object.assign(review, { scores: [3, 3, 3], strengths: '', weaknesses: '', suggestions: '' })
+  Object.assign(creation, { title: '', description: '', rubric: ['内容完整性', '逻辑与表达', '分析与创新'], submit_deadline: '', review_deadline: '', student_ids: [] })
+  Object.assign(extension, { submit_deadline: '', review_deadline: '' })
+  extending.value = false
+  page.value = 'home'
+}
+
 /* ---------- 分级提示 ---------- */
 function setNotice(type, text) { notice.value = { type, text } }
 function clearNotice() { notice.value = { type: '', text: '' } }
 
 /* ---------- 接口层：区分网络失败 / 服务错误 / 业务校验失败 ---------- */
 async function api(path, options = {}) {
+  const viewer = user.value, session = sessionVersion
   let response
   try {
     response = await fetch('/api' + path, {
@@ -73,6 +92,10 @@ async function api(path, options = {}) {
   }
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
+    if (response.status === 401 && viewer && user.value === viewer && sessionVersion === session) {
+      clearWorkspace()
+      setNotice('warn', '登录已过期，请重新登录')
+    }
     const detailText = typeof body.detail === 'string' ? body.detail : ''
     const err = new Error(detailText || (response.status >= 500 ? '服务暂时不可用，请稍后重试' : '请求失败，请检查输入后重试'))
     err.kind = response.status >= 500 ? 'server' : 'business'
@@ -83,18 +106,21 @@ async function api(path, options = {}) {
 }
 async function run(key, fn, success = '') {
   if (isBusy(key)) return
+  const session = sessionVersion, token = Symbol(key)
   actionVersion++
-  clearNotice(); pending[key] = true
+  clearNotice(); pending[key] = token
   try {
     await fn()
-    if (success) setNotice('success', success)
+    if (sessionVersion === session && success) setNotice('success', success)
   } catch (e) {
+    if (sessionVersion !== session) return
     if (e.status === 409 && user.value) {
       try { await refreshOpenDetail() } catch { /* Keep the original conflict message. */ }
     }
-    setNotice(e.kind === 'business' ? 'warn' : 'error', e.message || '操作失败，请稍后重试')
+    if (sessionVersion === session) setNotice(e.kind === 'business' ? 'warn' : 'error', e.message || '操作失败，请稍后重试')
   } finally {
-    delete pending[key]
+    // A previous account's completion must not unlock the new account's request.
+    if (pending[key] === token) delete pending[key]
   }
 }
 const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) })
@@ -166,18 +192,21 @@ async function signIn() {
 async function signOut() {
   await run('auth', async () => {
     // 本地登出优先：会话过期或网络失败时也必须清理界面状态。
-    try { await post('/auth/logout') } catch { /* 忽略 */ }
-    user.value = null; assignments.value = []; tasks.value = []
-    active.value = detail.value = dashboard.value = feedback.value = null
-    selectionInfo.value = null; quality.value = null
-    page.value = 'home'
+    const session = sessionVersion
+    let uncertain = false
+    try { await post('/auth/logout') } catch (e) { uncertain = e.status !== 401 }
+    if (sessionVersion === session) clearWorkspace()
+    if (uncertain) setNotice('warn', '服务端尚未确认退出，恢复网络后请重新退出登录；刷新页面可能仍显示登录状态。')
     await scrollTop()
   })
 }
-async function goHome() { await run('nav', async () => { await refresh(); page.value = 'home'; await scrollTop() }) }
+async function goHome() { await run('nav', async () => { const viewer = user.value; await refresh(); if (user.value !== viewer) return; page.value = 'home'; await scrollTop() }) }
 async function openAssignment(id) {
   await run('nav', async () => {
-    active.value = await api('/assignments/' + id)
+    const viewer = user.value
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    active.value = latest
     text.value = active.value.my_submission?.content_type === 'TEXT' ? active.value.my_submission.content_text : ''
     pdf.value = null
     if (pdfInput.value) pdfInput.value.value = ''
@@ -187,7 +216,11 @@ async function openAssignment(id) {
   })
 }
 async function newAssignment() {
-  await run('nav', async () => { students.value = await api('/students'); page.value = 'create'; await scrollTop() })
+  await run('nav', async () => {
+    const viewer = user.value, list = await api('/students')
+    if (user.value !== viewer) return
+    students.value = list; page.value = 'create'; await scrollTop()
+  })
 }
 
 /* ---------- 创建任务：截止时间前端校验 ---------- */
@@ -205,6 +238,7 @@ const deadlineErrors = computed(deadlineIssues)
 
 async function createAssignment() {
   await run('create', async () => {
+    const viewer = user.value
     const issues = deadlineIssues()
     if (issues.length) { const err = new Error(issues.join('；')); err.kind = 'business'; throw err }
     if (creation.student_ids.length < 3) { const err = new Error('至少选择 3 名参与学生'); err.kind = 'business'; throw err }
@@ -218,8 +252,10 @@ async function createAssignment() {
       submit_deadline: submitDate.toISOString(), review_deadline: reviewDate.toISOString(),
       student_ids: creation.student_ids
     })
+    if (user.value !== viewer) return
     Object.assign(creation, { title: '', description: '', rubric: ['内容完整性', '逻辑与表达', '分析与创新'], submit_deadline: '', review_deadline: '', student_ids: [] })
-    await refresh(); page.value = 'home'; await scrollTop()
+    await refresh(); if (user.value !== viewer || page.value !== 'create') return
+    page.value = 'home'; await scrollTop()
   }, '任务已创建')
 }
 
@@ -235,6 +271,7 @@ function openExtension() {
 async function extendDeadlines() {
   await run('extend', async () => {
     const item = active.value
+    const viewer = user.value
     const originalReview = extension.review_deadline === localDateTime(item.review_deadline)
     const latest = await api('/assignments/' + item.id + '/deadlines', {
       method: 'PATCH',
@@ -243,6 +280,7 @@ async function extendDeadlines() {
         review_deadline: originalReview ? item.review_deadline : new Date(extension.review_deadline).toISOString()
       })
     })
+    if (user.value !== viewer) return
     if (page.value === 'assignment' && active.value?.id === item.id) {
       active.value = latest
       extending.value = false
@@ -260,6 +298,7 @@ async function submitText() {
     if (!draft.trim()) { const err = new Error('作业正文不能为空'); err.kind = 'business'; throw err }
     if (codePoints(draft.trim()) > 10000) { const err = new Error('作业正文最多 10000 字符'); err.kind = 'business'; throw err }
     await post('/assignments/' + id + '/submission', { content_text: draft })
+    if (user.value !== viewer) return
     const latest = await api('/assignments/' + id)
     if (user.value === viewer && page.value === 'assignment' && active.value?.id === id) {
       active.value = latest
@@ -287,6 +326,7 @@ async function submitPDF() {
     const form = new FormData()
     form.append('file', file)
     await api('/assignments/' + id + '/submission/pdf', { method: 'POST', body: form })
+    if (user.value !== viewer) return
     const latest = await api('/assignments/' + id)
     if (user.value === viewer && page.value === 'assignment' && active.value?.id === id) {
       active.value = latest
@@ -300,27 +340,41 @@ async function submitPDF() {
 }
 async function startReview() {
   await run('start', async () => {
-    const res = await post('/assignments/' + active.value.id + '/start-review')
-    active.value = await api('/assignments/' + active.value.id)
+    const viewer = user.value, id = active.value.id
+    const res = await post('/assignments/' + id + '/start-review')
+    if (user.value !== viewer) return
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    if (page.value === 'assignment' && active.value?.id === id) active.value = latest
     await refresh()
-    setNotice('success', res.created ? `已生成 ${res.count} 条匿名互评任务` : '互评已开始')
+    if (user.value === viewer) setNotice('success', res.created ? `已生成 ${res.count} 条匿名互评任务` : '互评已开始')
   })
 }
 async function closeAssignment() {
   const skipped = active.value.phase === 'REVIEW_NOT_STARTED'
   if (skipped && !window.confirm('本次未生成互评任务。结束后，学生将看到本次未开展互评。确定结束？')) return
   await run('close', async () => {
-    await post('/assignments/' + active.value.id + '/close')
-    active.value = await api('/assignments/' + active.value.id)
+    const viewer = user.value, id = active.value.id
+    await post('/assignments/' + id + '/close')
+    if (user.value !== viewer) return
+    const latest = await api('/assignments/' + id)
+    if (user.value !== viewer) return
+    if (page.value === 'assignment' && active.value?.id === id) active.value = latest
     await refresh()
   }, skipped ? '任务已结束，本次未开展互评' : '任务已结束，学生可以查看反馈')
 }
 async function openDashboard(id) {
-  await run('nav', async () => { dashboard.value = await api('/assignments/' + id + '/dashboard'); page.value = 'dashboard'; await scrollTop() })
+  await run('nav', async () => {
+    const viewer = user.value, result = await api('/assignments/' + id + '/dashboard')
+    if (user.value !== viewer) return
+    dashboard.value = result; page.value = 'dashboard'; await scrollTop()
+  })
 }
 async function openFeedback(id) {
   await run('nav', async () => {
-    feedback.value = await api('/assignments/' + id + '/my-feedback')
+    const viewer = user.value, result = await api('/assignments/' + id + '/my-feedback')
+    if (user.value !== viewer) return
+    feedback.value = result
     focusedEvidence.value = null
     page.value = 'feedback'
     await scrollTop()
@@ -353,7 +407,9 @@ function editableReview(saved) {
 
 async function openReview(id) {
   await run('nav', async () => {
-    detail.value = await api('/review-tasks/' + id)
+    const viewer = user.value, result = await api('/review-tasks/' + id)
+    if (user.value !== viewer) return
+    detail.value = result
     const { evidence_anchors, ...fields } = editableReview(detail.value.review || detail.value.draft)
     Object.assign(review, fields)
     selected.value = evidence_anchors
@@ -454,8 +510,12 @@ async function checkAI() {
 async function submitReview() {
   if (readOnly.value) { setNotice('warn', '当前互评阶段已结束，不能提交评价'); return }
   await run('submitReview', async () => {
-    await post('/review-tasks/' + detail.value.id + '/submit', reviewBody())
-    await refresh(); page.value = 'home'; await scrollTop()
+    const viewer = user.value, id = detail.value.id
+    await post('/review-tasks/' + id + '/submit', reviewBody())
+    if (user.value !== viewer) return
+    await refresh()
+    if (user.value !== viewer || page.value !== 'review' || detail.value?.id !== id) return
+    page.value = 'home'; await scrollTop()
   }, '评价已提交，感谢你的认真反馈')
 }
 

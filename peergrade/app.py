@@ -16,13 +16,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import create_engine, select, func, text as sql_text, delete, event, inspect
+from sqlalchemy import create_engine, select, func, text as sql_text, delete, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession, sessionmaker
 
 from domain import (allocate, content_hash, feedback_summary, quality_level, score_review,
                     validate_ai_result, validate_anchors)
 from ai_service import MODEL_TIMEOUT_SECONDS, evaluate_quality
+from db_migrations import database_ready, upgrade_database
 from models import Base, User, Session, Assignment, Member, Submission, ReviewTask, ReviewDraft, Review, AICheck, RateBucket
 
 MAX_SUBMISSION_CHARS = 10000
@@ -100,11 +101,11 @@ if (frontend_dist / 'assets').is_dir():
 def healthz():
     try:
         with engine.connect() as connection:
-            ready = set(Base.metadata.tables).issubset(inspect(connection).get_table_names())
+            ready = database_ready(connection)
     except Exception:
         ready = False
     if not ready:
-        fail(503, '数据库未就绪，请先执行 python manage.py init-db')
+        fail(503, '数据库未就绪，请先执行 python manage.py upgrade-db')
     return {'status': 'ok'}
 
 
@@ -258,9 +259,12 @@ class Registration(Login):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError):
-    if request.url.path.rstrip('/') == '/api/auth/register':
+    path = request.url.path.rstrip('/')
+    if path == '/api/auth/register':
         # FastAPI 的默认错误体可能回显整个请求或密码字段。
         return JSONResponse(status_code=422, content={'detail': '请检查注册字段：名称为 1–100 字符，密码为 12–256 字符'})
+    if path == '/api/auth/login':
+        return JSONResponse(status_code=422, content={'detail': '请检查登录字段：用户名为 1–100 字符，密码为 1–256 字符'})
     return await request_validation_exception_handler(request, exc)
 
 
@@ -931,8 +935,8 @@ def dashboard(assignment_id: str, db: DB, actor: Actor):
 
 if __name__ == '__main__':
     # 自包含启动入口：部署平台只提供单个 HTTP 端口，并通过 PORT 环境变量注入。
-    # 先建表避免接口因缺表全部 500，再监听 0.0.0.0:PORT（未注入时用 3000）。
+    # 在启动前运行版本迁移，拒绝启动使用不兼容的数据库。
     import uvicorn
-    Base.metadata.create_all(engine)
+    upgrade_database(engine)
     port = int(os.getenv('PORT', '3000'))
     uvicorn.run(app, host='0.0.0.0', port=port)

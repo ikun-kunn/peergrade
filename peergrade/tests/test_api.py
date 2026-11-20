@@ -11,18 +11,19 @@ from tests.isolated_database import configure_test_database
 
 configure_test_database()
 from fastapi.testclient import TestClient
-from sqlalchemy import select, event
+from sqlalchemy import select, text, event
 from sqlalchemy.exc import IntegrityError
 from app import app, engine, SessionLocal, password_hash
 from models import Base, User, Session, Assignment, ReviewTask, Submission, ReviewDraft
 from domain import allocate, content_hash
 from manage import validate_account
+from db_migrations import upgrade_database
 
 
 class APITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        Base.metadata.create_all(engine)
+        upgrade_database(engine)
         with SessionLocal() as db:
             db.add_all([User(username=n, display_name=n, role='TEACHER' if n == 'teacher' else 'STUDENT',
                             password_hash=password_hash('password123')) for n in ['teacher', 's1', 's2', 's3', 'outsider']])
@@ -214,6 +215,9 @@ class APITests(unittest.TestCase):
             self.assertEqual(client.post('/api/auth/login', json={'username':'unknown-limit-test','password':'wrong'}).status_code, 429)
 
     def test_database_enforces_foreign_keys(self):
+        if engine.dialect.name == 'sqlite':
+            with engine.connect() as connection:
+                self.assertEqual(connection.execute(text('PRAGMA foreign_keys')).scalar(), 1)
         with SessionLocal() as db:
             db.add(Submission(assignment_id='missing', student_id=self.ids['s1'], content_type='TEXT',
                               content_text='invalid', content_hash=content_hash('invalid')))

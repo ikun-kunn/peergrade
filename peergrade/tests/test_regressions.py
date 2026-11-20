@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
 from app import app, engine, SessionLocal  # noqa: E402
+from db_migrations import upgrade_database  # noqa: E402
 from domain import (  # noqa: E402
     allocate, content_hash, feedback_summary, quality_level,
     validate_ai_result, validate_anchors,
@@ -154,8 +155,8 @@ class RegressionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # create_all 幂等：与 test_api.py 共用库时不会破坏其表或数据。
-        Base.metadata.create_all(engine)
+        # 与 test_api.py 共用库时，重复迁移不改变已有数据。
+        upgrade_database(engine)
 
     def setUp(self):
         self.tag = uuid.uuid4().hex[:10]
@@ -1009,7 +1010,7 @@ class AdjudicatedFixTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        Base.metadata.create_all(engine)
+        upgrade_database(engine)
 
     def setUp(self):
         self.tag = uuid.uuid4().hex[:10]
@@ -1317,6 +1318,14 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in client.get('/api/assignments').json()], [assigned])
         self.assertEqual(client.post(f'/api/assignments/{assigned}/start-review').status_code, 404)
 
+    def test_login_validation_does_not_echo_password(self):
+        client = TestClient(app)
+        response = client.post('/api/auth/login', json={
+            'username': 'test_student', 'password': 'example-password-' * 20,
+        })
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn('example-password-', response.text)
+
     def test_extension_reopens_submissions_and_expires_pending_reviews(self):
         aid = self.created(students=('s1', 's2', 's3', 's4', 'outsider'))
         path = f'/api/assignments/{aid}'
@@ -1376,6 +1385,8 @@ class AdjudicatedFixTests(unittest.TestCase):
             with patch('app.engine', empty_engine):
                 self.assertEqual(client.get('/healthz').status_code, 503)
                 Base.metadata.create_all(empty_engine)
+                self.assertEqual(client.get('/healthz').status_code, 503)
+                upgrade_database(empty_engine)
                 self.assertEqual(client.get('/healthz').status_code, 200)
         finally:
             empty_engine.dispose()

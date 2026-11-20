@@ -107,7 +107,7 @@ async function render(t, routes, role = 'STUDENT') {
     fetch: async (path, options) => {
       assert.ok(Object.hasOwn(responses, path), 'Unexpected request ' + path)
       const route = responses[path]
-      const result = typeof route === 'function' ? route(options) : route
+      const result = typeof route === 'function' ? await route(options) : route
       return result instanceof Response ? result : Response.json(result)
     }
   }
@@ -312,4 +312,45 @@ test('已过期评价只保留历史入口，不再计入待完成数', async t 
   assert.match(renderedText(overview), /待完成互评1需要你关注的评价/)
   assert.match(renderedText(button(root, '过期任务')), /评价已截止/)
   assert.match(renderedText(button(root, '进行中的任务')), /待评价/)
+})
+
+test('切换账号时丢弃旧账号仍在途的任务详情请求', async t => {
+  let completeOldRequest, requestStarted = false, account = 'old'
+  const old = { ...assignment, phase: 'SUBMITTING', has_submission: true }
+  const newAssignment = { ...assignment, id: 'assignment-2', title: '新账号合法任务', phase: 'SUBMITTING', has_submission: false }
+  const { root } = await render(t, {
+    '/api/assignments': () => account === 'old' ? [old] : [newAssignment],
+    '/api/assignments/assignment-1': () => {
+      requestStarted = true
+      return new Promise(resolve => { completeOldRequest = resolve })
+    },
+    '/api/auth/logout': () => { account = 'new'; return { ok: true } },
+    '/api/auth/login': () => ({ id: 'new', role: 'STUDENT', display_name: '新账号' })
+  })
+  const oldNavigation = click(button(root, assignment.title))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(requestStarted, true)
+  const signOut = descendants(root).find(node => node.tag === 'button' && node.props['aria-label'] === '退出登录')
+  assert.ok(signOut)
+  await click(signOut)
+  await submitForm(root)
+  assert.match(renderedText(root), /新账号合法任务/)
+  completeOldRequest({ ...old, my_submission: { content_type: 'TEXT', content_text: '上一账号的私有作业正文' } })
+  await oldNavigation
+  assert.match(renderedText(root), /新账号合法任务/)
+  assert.doesNotMatch(renderedText(root), /上一账号的私有作业正文|案例任务/)
+})
+
+test('当前会话过期后清空已加载任务并返回登录', async t => {
+  let expired = false
+  const { root, refresh } = await render(t, {
+    '/api/assignments': () => expired ? Response.json({ detail: '登录已过期' }, { status: 401 }) : [{ ...assignment, phase: 'SUBMITTING' }]
+  })
+  assert.match(renderedText(root), /案例任务/)
+  expired = true
+  await refresh()
+  await nextTick()
+  assert.match(renderedText(root), /登录 PeerGrade/)
+  assert.match(renderedText(root), /登录已过期，请重新登录/)
+  assert.doesNotMatch(renderedText(root), /案例任务/)
 })

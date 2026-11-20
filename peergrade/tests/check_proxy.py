@@ -163,8 +163,9 @@ def main():
     origin = f'https://127.0.0.1:{proxy_port}'
     os.environ.update(APP_ENV='production', PUBLIC_ORIGIN=origin, COOKIE_SECURE='true', AI_API_KEY='', AI_API_URL='', AI_MODEL='')
     from app import engine, SessionLocal, password_hash
-    from models import Base, User
-    Base.metadata.create_all(engine)
+    from models import User
+    from db_migrations import upgrade_database
+    upgrade_database(engine)
     with SessionLocal.begin() as db:
         db.add(User(username='proxy_teacher', display_name='合成教师', role='TEACHER', password_hash=password_hash(PASSWORD)))
     with TemporaryDirectory(prefix='peergrade-proxy-') as directory, ExitStack() as stack:
