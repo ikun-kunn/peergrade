@@ -1,0 +1,407 @@
+{
+  "candidate": "PeerGrade V2.4 local acceptance",
+  "date": "2026-11-22",
+  "scope": "Isolated synthetic database and real loopback browser runs; not a teaching study or public deployment",
+  "source_manifest_files": 54,
+  "source_manifest_sha256": "a8f9ff706445f0d49f08b0f3935d5f78e385919e4e4ede61f19cbabfccf6f9ba",
+  "environment": {
+    "python": "3.14.7",
+    "fastapi": "0.165.0",
+    "sqlalchemy": "2.1.9",
+    "node": "24.20.0",
+    "vite": "6.4.5",
+    "sqlite": "3.53.2",
+    "postgresql": "16.15",
+    "caddy": "2.11.9",
+    "browser": "Microsoft Edge 158.0.4370.33",
+    "viewports": [
+      "1280x800",
+      "390x844"
+    ]
+  },
+  "database_migration": "0004_feedback_revisions",
+  "backend_regression": {
+    "sqlite": {
+      "tests": 123,
+      "seconds": 50.203,
+      "passed": true
+    },
+    "postgresql": {
+      "tests": 123,
+      "seconds": 41.42,
+      "passed": true
+    }
+  },
+  "frontend": {
+    "tests": 26,
+    "pass": 26,
+    "fail": 0,
+    "build_dist": true,
+    "build_webroot": true
+  },
+  "concurrency": {
+    "sqlite": {
+      "database": "sqlite",
+      "transport": "in-process",
+      "accounts": 10,
+      "rounds": 3,
+      "write_workflow": {
+        "submissions": 9,
+        "reviews": 18,
+        "restored_drafts": 18,
+        "published_feedback": 9
+      },
+      "target_ms": 2000,
+      "passed": true,
+      "endpoints": {
+        "assignment_detail": {
+          "samples": 30,
+          "p95_ms": 72.9,
+          "max_ms": 92.0
+        },
+        "assignment_list": {
+          "samples": 30,
+          "p95_ms": 60.3,
+          "max_ms": 61.9
+        },
+        "create_assignment": {
+          "samples": 1,
+          "p95_ms": 19.7,
+          "max_ms": 19.7
+        },
+        "login": {
+          "samples": 10,
+          "p95_ms": 473.0,
+          "max_ms": 473.0
+        },
+        "publish_feedback": {
+          "samples": 1,
+          "p95_ms": 19.3,
+          "max_ms": 19.3
+        },
+        "published_feedback": {
+          "samples": 27,
+          "p95_ms": 76.4,
+          "max_ms": 84.2
+        },
+        "restore_review_draft": {
+          "samples": 18,
+          "p95_ms": 77.8,
+          "max_ms": 77.8
+        },
+        "review_detail": {
+          "samples": 27,
+          "p95_ms": 75.5,
+          "max_ms": 76.6
+        },
+        "review_queue": {
+          "samples": 27,
+          "p95_ms": 76.5,
+          "max_ms": 80.1
+        },
+        "save_review_draft": {
+          "samples": 18,
+          "p95_ms": 887.8,
+          "max_ms": 887.8
+        },
+        "start_review": {
+          "samples": 1,
+          "p95_ms": 21.3,
+          "max_ms": 21.3
+        },
+        "submit_review": {
+          "samples": 18,
+          "p95_ms": 774.7,
+          "max_ms": 774.7
+        },
+        "submit_text": {
+          "samples": 9,
+          "p95_ms": 287.8,
+          "max_ms": 287.8
+        },
+        "teacher_dashboard": {
+          "samples": 3,
+          "p95_ms": 286.3,
+          "max_ms": 286.3
+        },
+        "write_login": {
+          "samples": 10,
+          "p95_ms": 382.7,
+          "max_ms": 382.7
+        },
+        "write_published_feedback": {
+          "samples": 9,
+          "p95_ms": 87.9,
+          "max_ms": 87.9
+        },
+        "write_review_detail": {
+          "samples": 18,
+          "p95_ms": 150.0,
+          "max_ms": 150.0
+        },
+        "write_review_queue": {
+          "samples": 9,
+          "p95_ms": 78.2,
+          "max_ms": 78.2
+        },
+        "write_teacher_dashboard": {
+          "samples": 1,
+          "p95_ms": 16.6,
+          "max_ms": 16.6
+        }
+      },
+      "largest_endpoint_p95": {
+        "name": "save_review_draft",
+        "milliseconds": 887.8
+      }
+    },
+    "postgresql": {
+      "database": "postgresql",
+      "transport": "in-process",
+      "accounts": 10,
+      "rounds": 3,
+      "write_workflow": {
+        "submissions": 9,
+        "reviews": 18,
+        "restored_drafts": 18,
+        "published_feedback": 9
+      },
+      "target_ms": 2000,
+      "passed": true,
+      "endpoints": {
+        "assignment_detail": {
+          "samples": 30,
+          "p95_ms": 86.0,
+          "max_ms": 97.2
+        },
+        "assignment_list": {
+          "samples": 30,
+          "p95_ms": 127.0,
+          "max_ms": 177.6
+        },
+        "create_assignment": {
+          "samples": 1,
+          "p95_ms": 19.7,
+          "max_ms": 19.7
+        },
+        "login": {
+          "samples": 10,
+          "p95_ms": 737.2,
+          "max_ms": 737.2
+        },
+        "publish_feedback": {
+          "samples": 1,
+          "p95_ms": 28.5,
+          "max_ms": 28.5
+        },
+        "published_feedback": {
+          "samples": 27,
+          "p95_ms": 167.7,
+          "max_ms": 174.6
+        },
+        "restore_review_draft": {
+          "samples": 18,
+          "p95_ms": 90.0,
+          "max_ms": 90.0
+        },
+        "review_detail": {
+          "samples": 27,
+          "p95_ms": 170.9,
+          "max_ms": 171.4
+        },
+        "review_queue": {
+          "samples": 27,
+          "p95_ms": 133.8,
+          "max_ms": 153.4
+        },
+        "save_review_draft": {
+          "samples": 18,
+          "p95_ms": 296.8,
+          "max_ms": 296.8
+        },
+        "start_review": {
+          "samples": 1,
+          "p95_ms": 16.7,
+          "max_ms": 16.7
+        },
+        "submit_review": {
+          "samples": 18,
+          "p95_ms": 154.3,
+          "max_ms": 154.3
+        },
+        "submit_text": {
+          "samples": 9,
+          "p95_ms": 507.6,
+          "max_ms": 507.6
+        },
+        "teacher_dashboard": {
+          "samples": 3,
+          "p95_ms": 160.9,
+          "max_ms": 160.9
+        },
+        "write_login": {
+          "samples": 10,
+          "p95_ms": 466.7,
+          "max_ms": 466.7
+        },
+        "write_published_feedback": {
+          "samples": 9,
+          "p95_ms": 288.2,
+          "max_ms": 288.2
+        },
+        "write_review_detail": {
+          "samples": 18,
+          "p95_ms": 82.2,
+          "max_ms": 82.2
+        },
+        "write_review_queue": {
+          "samples": 9,
+          "p95_ms": 280.2,
+          "max_ms": 280.2
+        },
+        "write_teacher_dashboard": {
+          "samples": 1,
+          "p95_ms": 30.6,
+          "max_ms": 30.6
+        }
+      },
+      "largest_endpoint_p95": {
+        "name": "login",
+        "milliseconds": 737.2
+      }
+    }
+  },
+  "backup_restore": {
+    "sqlite": {
+      "database": "sqlite",
+      "archive_bytes": 249856,
+      "assignment_preserved": true,
+      "published_reviews": 2,
+      "validated_evidence_anchors": 2,
+      "classroom_members_preserved": 3,
+      "review_case_preserved": true,
+      "adoption_and_revision_preserved": true
+    },
+    "postgresql": {
+      "database": "postgresql",
+      "archive_bytes": 51143,
+      "assignment_preserved": true,
+      "published_reviews": 2,
+      "validated_evidence_anchors": 2,
+      "classroom_members_preserved": 3,
+      "review_case_preserved": true,
+      "adoption_and_revision_preserved": true
+    }
+  },
+  "sqlite_full_browser": {
+    "database": "sqlite",
+    "transport": "loopback HTTP",
+    "teacher": 1,
+    "registered_students": 3,
+    "classrooms": 1,
+    "submissions": 3,
+    "pdf_submissions": 1,
+    "reviews": 6,
+    "validated_anchors": 6,
+    "published_feedback": 3,
+    "adoptions": 1,
+    "revisions": 1,
+    "resolved_cases": 1,
+    "manual_fallback": true,
+    "desktop_mobile": true,
+    "csv_download": true
+  },
+  "postgresql_caddy": {
+    "database": "postgresql",
+    "proxy": "caddy",
+    "tls_chain_verified": true,
+    "transport": "loopback HTTPS",
+    "registered_students": 3,
+    "submissions": 3,
+    "completed_reviews": 6,
+    "published_feedback": 3,
+    "evidence_anchors_validated": 6,
+    "secure_cookie": true,
+    "manual_review_without_ai": true,
+    "pdf_upload_and_size_limit": true,
+    "password_change_revokes_all_sessions": true,
+    "oversized_proxy_request_outcome": "connection_closed",
+    "desktop_mobile_browser": true,
+    "complete_browser_workflow": {
+      "teacher": 1,
+      "registered_students": 3,
+      "classrooms": 1,
+      "submissions": 3,
+      "pdf_submissions": 1,
+      "reviews": 6,
+      "validated_anchors": 6,
+      "published_feedback": 3,
+      "adoptions": 1,
+      "revisions": 1,
+      "resolved_cases": 1,
+      "manual_fallback": true,
+      "desktop_mobile": true,
+      "csv_download": true
+    }
+  },
+  "postgresql_production_settings": {
+    "database": "postgresql",
+    "production_settings": true,
+    "secure_session_cookie": true,
+    "registration_login_logout": true,
+    "password_change_revokes_all_sessions": true,
+    "transport": "in-process simulated HTTPS origin"
+  },
+  "log_integrity": [
+    {
+      "label": "sqlite-regression",
+      "sha256": "24ad3a7f0552f7d35cef70aafc87ee5d73115b1f214e79f6cc413e69399eafb8"
+    },
+    {
+      "label": "sqlite-concurrency",
+      "sha256": "1ab55a410ffaa22539a1cc9a82ebb81add511038349964157df78c1df0b6e7a8"
+    },
+    {
+      "label": "sqlite-backup",
+      "sha256": "f9196c96250137adb92e1231e9bea4a9f98bce88bfc50c8a30e3a89969f12de4"
+    },
+    {
+      "label": "sqlite-full-browser",
+      "sha256": "b5cac533af48da5066b147a0cc80f1d3eecce2ad228c6ed7c29f62cca69b0af8"
+    },
+    {
+      "label": "frontend-test",
+      "sha256": "1923ee1aeda08f9d44ea2d13458e28d0d1b0f1c21fa7ba7ee0659deafea5af33"
+    },
+    {
+      "label": "frontend-build",
+      "sha256": "3b14d0fc17b2b2727e8f8d29afc443768a06109950af06dad8f8e42c78bee4ca"
+    },
+    {
+      "label": "postgres-regression",
+      "sha256": "bb2b7e03e0bdf75fbc3c46df07b519dd60f7cea674870881382456d138fcce21"
+    },
+    {
+      "label": "postgres-concurrency",
+      "sha256": "9e40f3f44a96c6da2535d7eac905787594258cb06d4f010eda4e935295dc2909"
+    },
+    {
+      "label": "postgres-backup",
+      "sha256": "874c814dc9115f3f650e31f3d63c0a7f05299bc0e494b1bd23ecaa9f55f40a14"
+    },
+    {
+      "label": "postgres-production-settings",
+      "sha256": "ad39e37f396bad68e70ce16f0b38b84958d2573e5dcfca07cc0ee0a0ac661eb0"
+    },
+    {
+      "label": "postgres-caddy-full-browser",
+      "sha256": "eb5e9e58cd424cb8b4380d910723de778639d657fa1b37d638de1b057df9ad44"
+    }
+  ],
+  "not_verified": [
+    "Latest remote GitHub Actions / Docker Compose stack",
+    "Public hostname and target-server load",
+    "Live DeepSeek model output, latency and actual token billing",
+    "Voluntary student study with independent human raters"
+  ]
+}

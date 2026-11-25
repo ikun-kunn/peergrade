@@ -9,11 +9,15 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import UniqueConstraint, inspect
 
 from migrations.schema_v1 import schema_v1
+from migrations.schema_v2 import schema_v2
+from migrations.schema_v3 import schema_v3
 from models import Base
 
 
 INITIAL_REVISION = '0001_initial'
-HEAD_REVISION = '0002_review_drafts'
+DRAFT_REVISION = '0002_review_drafts'
+CLASSROOM_REVISION = '0003_classrooms_review_cases'
+HEAD_REVISION = '0004_feedback_revisions'
 VERSION_TABLE = 'alembic_version'
 
 
@@ -58,8 +62,12 @@ def _heads(connection):
 def _revision_metadata(revision):
     if revision == INITIAL_REVISION:
         return schema_v1()
-    if revision == HEAD_REVISION:
+    if revision == DRAFT_REVISION:
         return schema_v1(with_drafts=True)
+    if revision == CLASSROOM_REVISION:
+        return schema_v2()
+    if revision == HEAD_REVISION:
+        return schema_v3()
     raise MigrationError('Unsupported database revision; inspect the database and migration history.')
 
 
@@ -74,7 +82,12 @@ def _state(connection):
         return 'versioned', revision
     if not tables:
         return 'empty', None
-    revision = HEAD_REVISION if 'review_drafts' in tables else INITIAL_REVISION
+    if tables & {'feedback_adoptions', 'submission_revisions'}:
+        revision = HEAD_REVISION
+    elif tables & {'classrooms', 'classroom_members', 'classroom_assignments', 'review_cases'}:
+        revision = CLASSROOM_REVISION
+    else:
+        revision = DRAFT_REVISION if 'review_drafts' in tables else INITIAL_REVISION
     _assert_schema(connection, _revision_metadata(revision))
     return 'legacy', revision
 

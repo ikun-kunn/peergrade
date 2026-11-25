@@ -1,0 +1,970 @@
+{
+  "revision": "0004_feedback_revisions",
+  "application_table_count": 16,
+  "separate_migration_table": "alembic_version",
+  "models_sha256": "4b57db4e040c8c9e31c8591de973fa13e3421e58beb7784ecec35cb5eb8dabdc",
+  "tables": [
+    {
+      "name": "users",
+      "title": "用户",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "username"
+          ],
+          "unique": true
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "username",
+          "postgres_type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "password_hash",
+          "postgres_type": "VARCHAR(256)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "display_name",
+          "postgres_type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "role",
+          "postgres_type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "sessions",
+      "title": "会话",
+      "primary_key": [
+        "token_hash"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "user_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "token_hash",
+          "postgres_type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "user_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "expires_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "rate_buckets",
+      "title": "限流计数",
+      "primary_key": [
+        "key",
+        "window"
+      ],
+      "unique_constraints": [],
+      "indexes": [],
+      "columns": [
+        {
+          "name": "key",
+          "postgres_type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "window",
+          "postgres_type": "INTEGER",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "count",
+          "postgres_type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "classrooms",
+      "title": "班级",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "invite_code"
+        ]
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "teacher_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "teacher_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "name",
+          "postgres_type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "invite_code",
+          "postgres_type": "VARCHAR(64)",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "classroom_members",
+      "title": "班级成员",
+      "primary_key": [
+        "classroom_id",
+        "student_id"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "student_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "classroom_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": [
+            "classrooms.id"
+          ]
+        },
+        {
+          "name": "student_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "status",
+          "postgres_type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "classroom_assignments",
+      "title": "班级任务关联",
+      "primary_key": [
+        "assignment_id"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "classroom_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "assignment_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": [
+            "assignments.id"
+          ]
+        },
+        {
+          "name": "classroom_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "classrooms.id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "assignments",
+      "title": "任务",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "teacher_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "teacher_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "title",
+          "postgres_type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "description",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "rubric",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "submit_deadline",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "review_deadline",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "status",
+          "postgres_type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "allocation_seed",
+          "postgres_type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "assignment_members",
+      "title": "任务成员快照",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "assignment_id",
+          "student_id"
+        ]
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "assignment_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "assignment_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "assignments.id"
+          ]
+        },
+        {
+          "name": "student_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "submissions",
+      "title": "原作业",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "assignment_id",
+          "student_id"
+        ]
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "assignment_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "assignment_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "assignments.id"
+          ]
+        },
+        {
+          "name": "student_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "content_type",
+          "postgres_type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "content_text",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "content_hash",
+          "postgres_type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "updated_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "review_tasks",
+      "title": "互评分配",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "submission_id",
+          "reviewer_id"
+        ]
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "assignment_id"
+          ],
+          "unique": false
+        },
+        {
+          "columns": [
+            "reviewer_id"
+          ],
+          "unique": false
+        },
+        {
+          "columns": [
+            "submission_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "assignment_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "assignments.id"
+          ]
+        },
+        {
+          "name": "submission_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "submissions.id"
+          ]
+        },
+        {
+          "name": "reviewer_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "users.id"
+          ]
+        },
+        {
+          "name": "status",
+          "postgres_type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "review_drafts",
+      "title": "互评草稿",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "review_task_id"
+        ]
+      ],
+      "indexes": [],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "review_task_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "review_tasks.id"
+          ]
+        },
+        {
+          "name": "content",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "updated_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "reviews",
+      "title": "正式评价",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "review_task_id"
+        ]
+      ],
+      "indexes": [],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "review_task_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "review_tasks.id"
+          ]
+        },
+        {
+          "name": "scores",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "total_score",
+          "postgres_type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "strengths",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "weaknesses",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "suggestions",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "evidence_anchors",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "submitted_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "ai_checks",
+      "title": "模型检测",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [],
+      "indexes": [
+        {
+          "columns": [
+            "review_task_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "review_task_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "review_tasks.id"
+          ]
+        },
+        {
+          "name": "input_hash",
+          "postgres_type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "input_data",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "result",
+          "postgres_type": "JSON",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "status",
+          "postgres_type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "review_cases",
+      "title": "复核记录",
+      "primary_key": [
+        "review_id"
+      ],
+      "unique_constraints": [],
+      "indexes": [],
+      "columns": [
+        {
+          "name": "review_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": [
+            "reviews.id"
+          ]
+        },
+        {
+          "name": "student_reason",
+          "postgres_type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "teacher_reason",
+          "postgres_type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "resolution",
+          "postgres_type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "opened_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "student_requested_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "teacher_flagged_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "resolved_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": true,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "feedback_adoptions",
+      "title": "反馈采纳",
+      "primary_key": [
+        "review_id"
+      ],
+      "unique_constraints": [],
+      "indexes": [],
+      "columns": [
+        {
+          "name": "review_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": [
+            "reviews.id"
+          ]
+        },
+        {
+          "name": "decision",
+          "postgres_type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "reason",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "updated_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    },
+    {
+      "name": "submission_revisions",
+      "title": "独立修订",
+      "primary_key": [
+        "id"
+      ],
+      "unique_constraints": [
+        [
+          "submission_id",
+          "version"
+        ]
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "submission_id"
+          ],
+          "unique": false
+        }
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": true,
+          "references": []
+        },
+        {
+          "name": "submission_id",
+          "postgres_type": "VARCHAR(36)",
+          "nullable": false,
+          "primary_key": false,
+          "references": [
+            "submissions.id"
+          ]
+        },
+        {
+          "name": "version",
+          "postgres_type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "content_text",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "note",
+          "postgres_type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "adoption_snapshot",
+          "postgres_type": "JSON",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        },
+        {
+          "name": "created_at",
+          "postgres_type": "TIMESTAMP WITH TIME ZONE",
+          "nullable": false,
+          "primary_key": false,
+          "references": []
+        }
+      ]
+    }
+  ]
+}

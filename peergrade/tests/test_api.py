@@ -67,6 +67,29 @@ class APITests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn('截止时间已过', response.json()['detail'])
 
+    def test_malformed_text_input_is_rejected_without_echo(self):
+        """非法 Unicode 或 NUL 应返回可序列化的 422，而不是 500 或回显原文。"""
+        teacher, student = self.login('teacher'), self.login('s1')
+        now = datetime.now(timezone.utc)
+        result = teacher.post('/api/assignments', json={
+            'title': '输入校验', 'description': '输入校验', 'rubric': ['a', 'b', 'c'],
+            'submit_deadline': (now + timedelta(hours=1)).isoformat(),
+            'review_deadline': (now + timedelta(hours=2)).isoformat(),
+            'student_ids': [self.ids[n] for n in ('s1', 's2', 's3')]})
+        self.assertEqual(result.status_code, 201, result.text)
+        aid = result.json()['id']
+        # JSON 转义中的孤立代理项无法编码为 UTF-8；默认错误处理器会在这里二次抛错。
+        surrogate = student.post(f'/api/assignments/{aid}/submission',
+                                 content=b'{"content_text": "abc\\ud800def"}',
+                                 headers={'Content-Type': 'application/json'})
+        self.assertEqual(surrogate.status_code, 422, surrogate.text)
+        self.assertIsInstance(surrogate.json()['detail'], str)
+        self.assertNotIn('abc', surrogate.json()['detail'])
+        # PostgreSQL 文本列不接受 NUL；应在进入数据库前拒绝。
+        nul = student.post(f'/api/assignments/{aid}/submission', json={'content_text': 'abc\u0000def'})
+        self.assertEqual(nul.status_code, 422, nul.text)
+        self.assertIn('空字符', nul.json()['detail'])
+
     def test_complete_workflow_and_access(self):
         teacher = self.login('teacher')
         clients = [self.login(n) for n in ('s1', 's2', 's3')]
@@ -102,14 +125,17 @@ class APITests(unittest.TestCase):
                 anchor = {'start': 0, 'end': 2, 'quote': text[:2], 'content_hash': detail['content_hash']}
                 data = {'scores': [3, 4, 5], 'strengths': '案例明确', 'weaknesses': '论证偏少',
                         'suggestions': '增加实例', 'evidence_anchors': [anchor]}
+                current_version = 'none'
                 bad = {**data, 'evidence_anchors': [{**anchor, 'start': 1}]}
-                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=bad).status_code, 422)
+                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=bad, headers={'X-Draft-Version': 'none'}).status_code, 422)
                 if not checked:
                     draft_url = f"/api/review-tasks/{task['id']}/draft"
                     draft = {**data, 'weaknesses':'', 'suggestions':''}
-                    self.assertEqual(outsider.post(draft_url, json=draft).status_code, 404)
-                    self.assertEqual(client.post(draft_url, json={**draft, 'evidence_anchors':bad['evidence_anchors']}).status_code, 422)
-                    self.assertEqual(client.post(draft_url, json=draft).status_code, 200)
+                    self.assertEqual(outsider.post(draft_url, json=draft, headers={'X-Draft-Version': 'none'}).status_code, 404)
+                    self.assertEqual(client.post(draft_url, json={**draft, 'evidence_anchors':bad['evidence_anchors']}, headers={'X-Draft-Version': 'none'}).status_code, 422)
+                    draft_saved = client.post(draft_url, json=draft, headers={'X-Draft-Version': 'none'})
+                    self.assertEqual(draft_saved.status_code, 200)
+                    current_version = draft_saved.json()['draft_version']
                     self.assertEqual(client.get('/api/review-tasks/'+task['id']).json()['draft'], draft)
                     self.assertEqual(outsider.get('/api/review-tasks/'+task['id']).status_code, 404)
                     endpoint = f"/api/review-tasks/{task['id']}/ai-check"
@@ -131,12 +157,12 @@ class APITests(unittest.TestCase):
                     with patch.dict(os.environ, {'AI_API_KEY':'test', 'AI_API_URL':'https://example.test', 'AI_MODEL':'test'}), patch('app.evaluate_quality', new=AsyncMock(side_effect=asyncio.TimeoutError)):
                         self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/ai-check", json=data).status_code, 503)
                     timeout_checked = True
-                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=data).status_code, 200)
-                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/draft", json=data).status_code, 409)
+                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=data, headers={'X-Draft-Version': current_version}).status_code, 200)
+                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/draft", json=data, headers={'X-Draft-Version': current_version}).status_code, 409)
                 with SessionLocal() as db:
                     self.assertIsNone(db.scalar(select(ReviewDraft).where(ReviewDraft.review_task_id == task['id'])))
-                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=data).status_code, 200)
-                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json={**data,'strengths':'修改'}).status_code, 409)
+                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json=data, headers={'X-Draft-Version': current_version}).status_code, 200)
+                self.assertEqual(client.post(f"/api/review-tasks/{task['id']}/submit", json={**data,'strengths':'修改'}, headers={'X-Draft-Version': current_version}).status_code, 409)
         stats = teacher.get(f'/api/assignments/{aid}/dashboard').json()
         self.assertEqual(stats['ai_call_count'], 4)
         self.assertEqual(stats['ai_levels']['HIGH'], 1)
@@ -185,7 +211,7 @@ class APITests(unittest.TestCase):
         data = {'scores':[3,3,3], 'strengths':'具体优点', 'weaknesses':'具体问题', 'suggestions':'改进方向', 'evidence_anchors':[]}
         def submit(_):
             other = TestClient(app); other.cookies.update(client.cookies)
-            return other.post(f"/api/review-tasks/{task['id']}/submit", json=data)
+            return other.post(f"/api/review-tasks/{task['id']}/submit", json=data, headers={'X-Draft-Version': 'none'})
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(submit, range(2)))
         self.assertEqual([r.status_code for r in results], [200, 200])
@@ -203,7 +229,7 @@ class APITests(unittest.TestCase):
         self.assertTrue(incomplete['summary']['incomplete'])
         self.assertEqual(incomplete['summary']['count'], 1)
         pending = next(t for t in client.get('/api/review-tasks').json() if t['assignment_id'] == aid and t['status'] == 'PENDING')
-        self.assertEqual(client.post(f"/api/review-tasks/{pending['id']}/submit", json=data).status_code, 409)
+        self.assertEqual(client.post(f"/api/review-tasks/{pending['id']}/submit", json=data, headers={'X-Draft-Version': 'none'}).status_code, 409)
 
     def test_login_rate_limit_and_origin(self):
         client = TestClient(app)
@@ -273,7 +299,7 @@ class APITests(unittest.TestCase):
         for task_id, token, score in zip(task_ids, tokens, (0,5)):
             client=TestClient(app); client.cookies.set('pg_session', token)
             review={'scores':[score]*3, 'strengths':'优点','weaknesses':'问题','suggestions':'建议','evidence_anchors':[]}
-            self.assertEqual(client.post(f'/api/review-tasks/{task_id}/submit',json=review).status_code,200)
+            self.assertEqual(client.post(f'/api/review-tasks/{task_id}/submit',json=review,headers={'X-Draft-Version':'none'}).status_code,200)
         queries = []
         def count_selects(conn, cursor, statement, parameters, context, executemany):
             if statement.lstrip().upper().startswith('SELECT'):

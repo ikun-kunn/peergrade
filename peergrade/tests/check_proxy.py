@@ -130,23 +130,37 @@ def run_workflow(origin, certificate, db_sessions):
                 anchor = {'start': start, 'end': start + len(QUOTE), 'quote': QUOTE, 'content_hash': detail['content_hash']}
                 review = {'scores': [4, 4, 4], 'strengths': '指出了反馈的作用。', 'weaknesses': '尚缺具体数据。',
                           'suggestions': '补充前后测试记录。', 'evidence_anchors': [anchor]}
-                student.post(task_path + '/draft', json=review).raise_for_status()
+                draft_saved = student.post(task_path + '/draft', json=review, headers={'X-Draft-Version': 'none'}).raise_for_status()
                 require(student.get(task_path).raise_for_status().json()['draft'] == review, 'Review draft not restored.')
                 require(student.post(task_path + '/ai-check', json=review).status_code == 503, 'Unconfigured model should be unavailable.')
-                student.post(task_path + '/submit', json=review).raise_for_status()
+                student.post(task_path + '/submit', json=review, headers={'X-Draft-Version': draft_saved.json()['draft_version']}).raise_for_status()
         stats = teacher.get(path + '/dashboard').raise_for_status().json()
         require(stats['review_count'] == stats['review_task_count'] == 6, 'Dashboard is incomplete.')
         teacher.post(path + '/close').raise_for_status()
-        for student in students:
+        for index, student in enumerate(students):
             feedback = student.get(path + '/my-feedback').raise_for_status().json()
             require(len(feedback['reviews']) == 2 and feedback['summary']['average_total'] == 12, 'Published feedback is incomplete.')
             for review in feedback['reviews']:
                 anchor = review['evidence_anchors'][0]
                 require(feedback['content_text'][anchor['start']:anchor['end']] == QUOTE, 'Feedback anchor mismatch.')
+            if index == 1:
+                second = client()
+                credentials = {'username': f'proxy_student_{index}', 'password': PASSWORD}
+                second.post('/api/auth/login', json=credentials).raise_for_status()
+                replacement = 'local proxy new synthetic password'
+                changed = student.post('/api/auth/change-password', json={'current_password': PASSWORD,
+                    'new_password': replacement, 'password_confirmation': replacement}).raise_for_status()
+                deleted = SimpleCookie(changed.headers['set-cookie'])['pg_session']
+                require(deleted['max-age'] == '0' and deleted['secure'] and deleted['httponly'], 'Expected expired secure cookie.')
+                require(second.get('/api/auth/me').status_code == student.get('/api/auth/me').status_code == 401,
+                        'Previous sessions were not revoked.')
+                require(student.post('/api/auth/login',json=credentials).status_code == 401,'Old credential accepted.')
+                student.post('/api/auth/login',json={**credentials,'password':replacement}).raise_for_status()
+                require(student.get(path+'/my-feedback').raise_for_status().json() == feedback, 'Password change modified feedback.')
             student.post('/api/auth/logout').raise_for_status()
         return {'registered_students': 3, 'submissions': 3, 'completed_reviews': 6,
                 'published_feedback': 3, 'evidence_anchors_validated': 6, 'secure_cookie': True,
-                'manual_review_without_ai': True, 'pdf_upload_and_size_limit': True,
+                'manual_review_without_ai': True, 'pdf_upload_and_size_limit': True, 'password_change_revokes_all_sessions':True,
                 'oversized_proxy_request_outcome': proxy_outcome}
 
 
@@ -154,6 +168,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--caddy', type=Path, required=True)
     parser.add_argument('--browser', action='store_true', help='Also run the optional Playwright browser check')
+    parser.add_argument('--full-browser', action='store_true', help='Run a complete UI workflow with separate synthetic accounts')
     args = parser.parse_args()
     if not args.caddy.is_file() or not os.getenv('PEERGRADE_TEST_POSTGRES_URL'):
         parser.error('Provide an existing Caddy binary and a dedicated PostgreSQL test URL.')
@@ -178,7 +193,7 @@ def main():
         require(local != production and '{$DOMAIN}' not in local and 'web:8000' not in local, 'Caddyfile layout changed; update the local harness.')
         config.write_text(f'{{\n    admin off\n    persist_config off\n    skip_install_trust\n    auto_https disable_redirects\n    storage file_system {{\n        root "{storage.as_posix()}"\n    }}\n}}\n\n' + local, encoding='utf-8')
         env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'}
-        backend = launch(stack, [sys.executable, '-m', 'uvicorn', 'app:app', '--host', '127.0.0.1', '--port', str(backend_port),
+        backend = launch(stack, [sys.executable, '-m', 'uvicorn', 'app:app', '--host', '127.0.0.1', '--port', str(backend_port), '--no-access-log',
                                  '--proxy-headers', '--forwarded-allow-ips', '127.0.0.1'], scratch / 'backend.log', env)
         wait_for(backend, lambda: httpx.get(f'http://127.0.0.1:{backend_port}/healthz', trust_env=False, timeout=2).status_code == 200,
                  'Local production backend did not start.')
@@ -197,6 +212,9 @@ def main():
                 subprocess.run(['node', str(ROOT / 'frontend' / 'scripts' / 'check-proxy-browser.cjs')],
                                env={**env, 'PEERGRADE_LOCAL_ORIGIN': origin}, cwd=ROOT, check=True, timeout=90)
                 result['desktop_mobile_browser'] = True
+            if args.full_browser:
+                from tests.check_browser_workflow import run_full_browser
+                result['complete_browser_workflow'] = run_full_browser(origin, SessionLocal, env)
             print(json.dumps({'database': 'postgresql', 'proxy': 'caddy', 'tls_chain_verified': True,
                               'transport': 'loopback HTTPS', **result}, ensure_ascii=False))
         except Exception:

@@ -147,11 +147,11 @@ def run_load(rounds):
                         'suggestions': '补充试点前后数据。',
                         'evidence_anchors': [{'start': start, 'end': start + len(quote), 'quote': quote,
                                               'content_hash': detail['content_hash']}]}
-                request(client, measurements, 'save_review_draft', task_path + '/draft', 'POST', json=body)
+                draft_saved = request(client, measurements, 'save_review_draft', task_path + '/draft', 'POST', json=body, headers={'X-Draft-Version': 'none'})
                 restored = request(client, measurements, 'restore_review_draft', task_path)
                 if restored.get('draft') != body:
                     raise RuntimeError('Write workflow failed to restore the saved draft.')
-                request(client, measurements, 'submit_review', task_path + '/submit', 'POST', json=body)
+                request(client, measurements, 'submit_review', task_path + '/submit', 'POST', json=body, headers={'X-Draft-Version': draft_saved['draft_version']})
             return measurements
 
         for measurements in pool.map(submit_reviews, clients[1:]):

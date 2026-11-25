@@ -28,7 +28,7 @@ def main():
     from db_migrations import upgrade_database
 
     upgrade_database(engine)
-    uvicorn.run(app, host='127.0.0.1', port=args.port)
+    uvicorn.run(app, host='127.0.0.1', port=args.port, access_log=False)
 
 
 if __name__ == '__main__':

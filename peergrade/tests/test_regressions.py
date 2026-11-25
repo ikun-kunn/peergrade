@@ -279,8 +279,408 @@ class RegressionTests(unittest.TestCase):
         data.update(overrides)
         return data
 
-    def submit(self, who, task_id, body):
-        return self.c(who).post(f'/api/review-tasks/{task_id}/submit', json=body)
+    def submit(self, who, task_id, body, version='none'):
+        return self.c(who).post(f'/api/review-tasks/{task_id}/submit', json=body,
+                                headers={'X-Draft-Version': version})
+
+    def test_classroom_invite_members_and_assignment_snapshot(self):
+        teacher, student = self.c('teacher'), self.c('s1')
+        created = teacher.post('/api/classrooms', json={'name': '合成班级'})
+        self.assertEqual(created.status_code, 201, created.text)
+        item = created.json()
+        path = '/api/classrooms/' + item['id']
+        self.assertEqual(self.c('teacher2').get(path).status_code, 404)
+        self.assertEqual(self.c('outsider').get(path).status_code, 404)
+        self.assertEqual(self.c('teacher2').get('/api/classrooms').json(), [])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = list(pool.map(lambda client: client.post('/api/classrooms/join', json={'invite_code': item['invite_code']}),
+                                     [student, self._client('s1')]))
+        self.assertEqual([response.status_code for response in requests], [200, 200])
+        joined = requests[0]
+        self.assertEqual(joined.status_code, 200, joined.text)
+        self.assertEqual(joined.json()['membership_status'], 'PENDING')
+        self.assertNotIn('invite_code', joined.json())
+        self.assertEqual(requests[1].json(), joined.json())
+        pending = student.get(path).json()
+        self.assertNotIn('members', pending)
+        self.assertNotIn('invite_code', pending)
+        self.assertEqual(pending['assignments'], [])
+        self.assertEqual(self.create(classroom_id=item['id']).status_code, 422)
+        self.assertEqual(self.c('teacher2').patch(path + '/members/' + self.uid['s1'], json={'action': 'approve'}).status_code, 404)
+        approved = teacher.patch(path + '/members/' + self.uid['s1'], json={'action': 'approve'})
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(student.get(path).json()['membership_status'], 'ACTIVE')
+        with SessionLocal() as db:
+            usernames = {who: db.get(User, self.uid[who]).username for who in ('s2', 's3', 's4')}
+        rejected = teacher.post(path + '/members', json={'usernames': [usernames['s2'], 'missing-fixture-user']})
+        self.assertEqual(rejected.status_code, 422)
+        self.assertEqual(len(teacher.get(path).json()['members']), 1)
+        result = teacher.post(path + '/members', json={'usernames': [usernames['s2'], usernames['s3'], usernames['s2']]})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(len(result.json()['members']), 3)
+        self.assertEqual(self.create(students=('s1', 's2', 's4'), classroom_id=item['id']).status_code, 422)
+        self.assertEqual(self.create(teacher='teacher2', classroom_id=item['id']).status_code, 404)
+        aid = self.created(classroom_id=item['id'])
+        self.assertEqual([row['id'] for row in student.get(path).json()['assignments']], [aid])
+        self.assertEqual([row['id'] for row in teacher.get(path).json()['assignments']], [aid])
+        rotated = teacher.post(path + '/invite', json={'action': 'rotate'}).json()
+        self.assertNotEqual(rotated['invite_code'], item['invite_code'])
+        self.assertEqual(self.c('s4').post('/api/classrooms/join', json={'invite_code': item['invite_code']}).status_code, 404)
+        self.assertIsNone(teacher.post(path + '/invite', json={'action': 'disable'}).json()['invite_code'])
+        self.assertEqual(self.c('s4').post('/api/classrooms/join', json={'invite_code': rotated['invite_code']}).status_code, 404)
+        teacher.patch(path + '/members/' + self.uid['s1'], json={'action': 'remove'}).raise_for_status()
+        self.assertEqual(student.get(path).status_code, 404)
+        self.assertEqual(student.get('/api/assignments/' + aid).status_code, 200)
+
+    def test_ai_check_rejects_empty_draft_without_spending_a_call(self):
+        """空草稿没有可评价内容：应直接 422，不调用模型、不占用额度、不计入看板统计。"""
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        env = {'AI_API_KEY': 'test', 'AI_API_URL': 'https://example.test', 'AI_MODEL': 'test'}
+        model = AsyncMock(return_value=ai_result())
+        body = self.body(strengths='', weaknesses='', suggestions='')
+        with patch.dict(os.environ, env), patch('app.evaluate_quality', new=model):
+            response = self.c('s1').post(f'/api/review-tasks/{task["id"]}/ai-check', json=body)
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(model.await_count, 0)
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 3)
+        stats = self.c('teacher').get(f'/api/assignments/{aid}/dashboard').json()
+        self.assertEqual(stats['ai_call_count'], 0)
+        self.assertEqual(stats['ai_success_count'], 0)
+
+    def test_published_feedback_appeal_and_teacher_resolution_preserve_review(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task_id, reviewer, detail = self.task_of(aid, 's1')
+        body = self.body(anchors=[self.anchor(detail)])
+        self.assertEqual(self.submit(reviewer, task_id, body).status_code, 200)
+        with SessionLocal() as db:
+            saved = db.scalar(select(Review).where(Review.review_task_id == task_id))
+            review_id = saved.id
+            reviewer_name = db.get(User, self.uid[reviewer]).display_name
+        path = '/api/feedback/' + review_id
+        self.assertEqual(self.c('s1').post(path + '/appeal', json={'reason': '希望核实评价依据'}).status_code, 409)
+        self.deadlines(aid, review=now() - timedelta(seconds=1))
+        self.c('teacher').post('/api/assignments/' + aid + '/close').raise_for_status()
+        feedback_path = f'/api/assignments/{aid}/my-feedback'
+        before = self.c('s1').get(feedback_path).json()
+        self.assertEqual(before['reviews'][0]['feedback_id'], review_id)
+        self.assertIsNone(before['reviews'][0]['review_case'])
+        for who in (reviewer, 'outsider', 'teacher2'):
+            self.assertEqual(self.c(who).post(path + '/appeal', json={'reason': '无权申请'}).status_code, 404)
+        flagged = self.c('teacher').post(path + '/flag', json={'reason': '教师内部待核对'}).raise_for_status().json()
+        self.assertEqual(flagged['status'], 'PENDING')
+        self.assertEqual(self.c('teacher2').post(path + '/resolve', json={'resolution': '处理', 'confirm_anonymous': True}).status_code, 404)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            requests = list(pool.map(lambda client: client.post(path + '/appeal', json={'reason': '希望核实评价依据'}),
+                                     [self.c('s1'), self._client('s1')]))
+        self.assertEqual(sorted(response.status_code for response in requests), [200, 409])
+        appeal = next(response for response in requests if response.status_code == 200).json()
+        self.assertNotIn('teacher_reason', appeal)
+        self.assertEqual(appeal['student_reason'], '希望核实评价依据')
+        self.assertEqual(self.c('s1').post(path + '/appeal', json={'reason': '重复'}).status_code, 409)
+        stats = self.c('teacher').get(f'/api/assignments/{aid}/dashboard').json()
+        self.assertEqual(stats['review_case_pending'], 1)
+        self.assertEqual(self.c('teacher').post(path + '/resolve', json={'resolution': '处理意见', 'confirm_anonymous': False}).status_code, 422)
+        self.assertEqual(self.c('teacher').post(path + '/resolve', json={'resolution': reviewer_name, 'confirm_anonymous': True}).status_code, 422)
+        resolved = self.c('teacher').post(path + '/resolve', json={'resolution': '已核对原文证据，原评价保留。', 'confirm_anonymous': True}).raise_for_status().json()
+        self.assertEqual(resolved['status'], 'RESOLVED')
+        self.assertEqual(self.c('teacher').post(path + '/resolve', json={'resolution': '再次处理', 'confirm_anonymous': True}).status_code, 409)
+        after = self.c('s1').get(feedback_path).json()
+        self.assertEqual(after['summary'], before['summary'])
+        self.assertEqual(after['reviews'][0]['scores'], before['reviews'][0]['scores'])
+        self.assertEqual(after['reviews'][0]['evidence_anchors'], before['reviews'][0]['evidence_anchors'])
+        self.assertEqual(after['reviews'][0]['review_case']['resolution'], '已核对原文证据，原评价保留。')
+        self.assertNotIn('teacher_reason', after['reviews'][0]['review_case'])
+        self.assertNotIn(reviewer_name, str(after['reviews'][0]['review_case']))
+        stats = self.c('teacher').get(f'/api/assignments/{aid}/dashboard').json()
+        self.assertEqual(stats['review_case_pending'], 0)
+        self.assertEqual(stats['review_case_resolved'], 1)
+
+    def test_located_diagnostics_and_scoped_learning_profile(self):
+        aid = self.created()
+        self.setup_submissions(aid, text='😀原文证据与案例阐述。重复重复。')
+        self.start_ok(aid)
+        task_id, reviewer, detail = self.task_of(aid, 's1')
+        anchor = self.anchor(detail, 1, 4)
+        body = self.body(anchors=[anchor], strengths='😀评价过于宽泛')
+        diagnostic = {'type': 'VAGUE_FEEDBACK', 'field': 'strengths', 'review_quote': '评价过于宽泛',
+                      'source_quote': '原文证据', 'evidence_index': 0, 'reason': '需说明具体内容', 'guidance': '核对所引原文'}
+        result = {**ai_result(scores=(0, 1, 2)), 'diagnostics': [diagnostic, {**diagnostic, 'source_quote': '并不存在', 'review_quote': '伪造'}]}
+        path = f'/api/review-tasks/{task_id}/ai-check'
+        with patch.dict(os.environ, {'AI_API_URL': 'https://example.invalid/v1', 'AI_API_KEY': 'synthetic', 'AI_MODEL': 'fixture'}), patch('app.evaluate_quality', new=AsyncMock(return_value=result)):
+            first = self.c(reviewer).post(path, json=body)
+        self.assertEqual(first.status_code, 200, first.text)
+        data = first.json()['diagnostics']
+        self.assertEqual(data[0]['location_status'], 'LOCATED')
+        self.assertEqual(data[0]['review_location']['start'], 1)
+        self.assertEqual(data[0]['source_location']['start'], 1)
+        self.assertEqual(data[1]['location_status'], 'UNCERTAIN')
+        self.assertIsNone(data[1]['source_location'])
+        final = {**body, 'weaknesses': '修订后的反馈问题'}
+        with patch.dict(os.environ, {'AI_API_URL': 'https://example.invalid/v1', 'AI_API_KEY': 'synthetic', 'AI_MODEL': 'fixture'}), patch('app.evaluate_quality', new=AsyncMock(return_value={**result, 'specificity': 2})):
+            self.c(reviewer).post(path, json=final).raise_for_status()
+        self.submit(reviewer, task_id, final).raise_for_status()
+        dashboard = self.c('teacher').get(f'/api/assignments/{aid}/dashboard').raise_for_status().json()
+        self.assertEqual(dashboard['ai_dimension_sample_count'], 1)
+        self.assertEqual(dashboard['ai_dimension_means']['specificity'], 2)
+        self.assertEqual(dashboard['ai_paired_dimensions']['before']['specificity'], 0)
+        self.assertEqual(dashboard['ai_paired_dimensions']['after']['specificity'], 2)
+        # Enrollment with another teacher must remain invisible to the first teacher's profile.
+        other = self.created(teacher='teacher2')
+        self_profile = self.c(reviewer).get('/api/learning-profile').raise_for_status().json()
+        self.assertEqual({row['assignment_id'] for row in self_profile['assignments']}, {aid, other})
+        self.assertEqual(self_profile['completed_reviews'], 1)
+        self.assertEqual(self_profile['sample_count'], 1)
+        teacher_path = f'/api/students/{self.uid[reviewer]}/learning-profile'
+        scoped = self.c('teacher').get(teacher_path).raise_for_status().json()
+        self.assertEqual([row['assignment_id'] for row in scoped['assignments']], [aid])
+        self.assertEqual(scoped['dimension_means']['specificity'], 2)
+        other_profile = self.c('teacher2').get(teacher_path).raise_for_status().json()
+        self.assertEqual([row['assignment_id'] for row in other_profile['assignments']], [other])
+        self.assertIsNone(other_profile['dimension_means']['specificity'])
+        self.assertNotIn('content_text', str(scoped))
+        self.assertEqual(self.c('s1').get(teacher_path).status_code, 404)
+        self.assertEqual(self.c('teacher').get(f'/api/students/{self.uid["outsider"]}/learning-profile').status_code, 404)
+
+    def test_feedback_adoption_and_immutable_revision_snapshots(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task_id, reviewer, detail = self.task_of(aid, 's1')
+        self.submit(reviewer, task_id, self.body(anchors=[self.anchor(detail)])).raise_for_status()
+        with SessionLocal() as db:
+            review_id = db.scalar(select(Review).where(Review.review_task_id == task_id)).id
+            sub_id = db.scalar(select(Submission).where(Submission.assignment_id == aid, Submission.student_id == self.uid['s1'])).id
+        adoption = '/api/feedback/' + review_id + '/adoption'
+        revision = f'/api/assignments/{aid}/revisions'
+        payload = {'decision': 'ADOPTED', 'reason': '补充例证'}
+        new_text = {'content_text': detail['content_text'] + '新例证。', 'note': '补充论据'}
+        self.assertEqual(self.c('s1').put(adoption, json=payload).status_code, 409)
+        self.assertEqual(self.c('s1').post(revision, json=new_text).status_code, 409)
+        self.deadlines(aid, review=now() - timedelta(seconds=1))
+        self.c('teacher').post(f'/api/assignments/{aid}/close').raise_for_status()
+        feedback_path = f'/api/assignments/{aid}/my-feedback'
+        before = self.c('s1').get(feedback_path).raise_for_status().json()
+        self.assertEqual(self.c(reviewer).put(adoption, json=payload).status_code, 404)
+        self.c('s1').put(adoption, json=payload).raise_for_status()
+        self.assertEqual(self.c('s1').post(revision, json={'content_text': detail['content_text'], 'note':'不变'}).status_code, 422)
+        first = self.c('s1').post(revision, json=new_text).raise_for_status().json()
+        self.assertEqual(first['version'], 1)
+        self.assertEqual(first['adoption_snapshot'][0]['decision'], 'ADOPTED')
+        self.c('s1').put(adoption, json={'decision': 'NOT_ADOPTED', 'reason': '另需核对'}).raise_for_status()
+        second = self.c('s1').post(revision, json={**new_text, 'content_text': new_text['content_text']+'再修订'}).raise_for_status().json()
+        self.assertEqual(second['version'], 2)
+        self.assertEqual(second['adoption_snapshot'][0]['decision'], 'NOT_ADOPTED')
+        after = self.c('s1').get(feedback_path).raise_for_status().json()
+        self.assertEqual(after['content_text'], before['content_text'])
+        self.assertEqual(after['reviews'][0]['evidence_anchors'], before['reviews'][0]['evidence_anchors'])
+        self.assertEqual(after['summary'], before['summary'])
+        self.assertEqual(after['revisions'], [first, second])
+        history = f'/api/assignments/{aid}/revision-history/{sub_id}'
+        self.assertEqual(self.c('teacher').get(history).raise_for_status().json()['revisions'], [first, second])
+        self.assertEqual(self.c('teacher2').get(history).status_code, 404)
+        self.assertEqual(self.c(reviewer).get(history).status_code, 404)
+        for version in range(3, 6):
+            self.assertEqual(self.c('s1').post(revision, json={'content_text': f'版本{version}', 'note':'继续改进'}).raise_for_status().json()['version'], version)
+        self.assertEqual(self.c('s1').post(revision, json={'content_text': '超过上限', 'note':'继续改进'}).status_code, 409)
+
+    def test_draft_version_prevents_stale_automatic_overwrite(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]['id']
+        path = f'/api/review-tasks/{task}/draft'
+        self.assertEqual(self.detail('s1', task)['draft_version'], 'none')
+        headers = {'X-Draft-Version': 'none'}
+        body = self.body(strengths='初始草稿', weaknesses='', suggestions='')
+        first = self.c('s1').post(path, json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        version = first.json()['draft_version']
+        self.assertEqual(version, self.detail('s1', task)['draft_version'])
+        self.assertEqual(self.c('s1').post(path, json=self.body(), headers=headers).status_code, 409)
+        self.assertEqual(self.detail('s1', task)['draft'], body)
+        latest = self.body(strengths='新版草稿')
+        second = self.c('s1').post(path, json=latest, headers={'X-Draft-Version': version})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertNotEqual(second.json()['draft_version'], version)
+        self.assertEqual(self.detail('s1', task)['draft'], latest)
+        self.assertEqual(self.submit('s1', task, latest, version=second.json()['draft_version']).status_code, 200)
+        self.assertEqual(self.c('s1').post(path, json=body, headers={'X-Draft-Version': second.json()['draft_version']}).status_code, 409)
+
+    def test_submit_requires_draft_version_and_rejects_stale_page(self):
+        """P1-2：正式提交与草稿共用乐观并发校验，旧页面不得覆盖并删除其他页面的新草稿。"""
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]['id']
+        path = f'/api/review-tasks/{task}/draft'
+        # 版本头不可省略：草稿与正式提交缺少版本头都必须 422。
+        self.assertEqual(self.c('s1').post(path, json=self.body()).status_code, 422)
+        self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task}/submit', json=self.body()).status_code, 422)
+        # 页面 A 保存草稿，页面 B 基于同一版本保存了更新内容。
+        first = self.c('s1').post(path, json=self.body(strengths='页面A'), headers={'X-Draft-Version': 'none'})
+        self.assertEqual(first.status_code, 200, first.text)
+        version_a = first.json()['draft_version']
+        second = self.c('s1').post(path, json=self.body(strengths='页面B'), headers={'X-Draft-Version': version_a})
+        self.assertEqual(second.status_code, 200, second.text)
+        version_b = second.json()['draft_version']
+        # 页面 A 用陈旧版本正式提交：409，新草稿与可写状态保持不变。
+        stale = self.submit('s1', task, self.body(strengths='页面A'), version=version_a)
+        self.assertEqual(stale.status_code, 409)
+        self.assertIn('草稿版本冲突', stale.json()['detail'])
+        detail = self.detail('s1', task)
+        self.assertEqual(detail['draft']['strengths'], '页面B')
+        self.assertTrue(detail['can_write'])
+        self.assertEqual(detail['draft_version'], version_b)
+        # 页面 A 确认覆盖：携带最新版本提交成功，草稿被清理。
+        ok = self.submit('s1', task, self.body(strengths='页面A'), version=version_b)
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertIsNone(self.detail('s1', task)['draft'])
+        # 提交成功后的超时重试（仍持提交前版本头）走幂等分支，不被版本校验误拒。
+        retry = self.submit('s1', task, self.body(strengths='页面A'), version=version_b)
+        self.assertEqual(retry.status_code, 200)
+
+    def test_pdf_endpoint_runs_in_threadpool(self):
+        """P1-1：PDF 解析端点必须是同步 def，交由线程池执行，避免阻塞单 worker 事件循环。"""
+        import inspect
+        import app as app_module
+        self.assertFalse(inspect.iscoroutinefunction(app_module.submit_pdf))
+
+    def test_ai_check_accepts_partial_draft(self):
+        """TRD 4.5 的低质量样例可能只写一句；其余字段为空时应检测而不是 422。"""
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        env = {'AI_API_KEY': 'test', 'AI_API_URL': 'https://example.test', 'AI_MODEL': 'test'}
+        model = AsyncMock(return_value=ai_result(scores=(0, 0, 0)))
+        with patch.dict(os.environ, env), patch('app.evaluate_quality', new=model):
+            response = self.c('s1').post(
+                f'/api/review-tasks/{task["id"]}/ai-check',
+                json=self.body(strengths='写得很好，继续加油。', weaknesses='', suggestions=''))
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['quality_level'], 'LOW')
+        payload = json.loads(model.await_args.args[3])
+        self.assertEqual(payload['review'], {'strengths': '写得很好，继续加油。', 'weaknesses': '', 'suggestions': ''})
+        self.assertEqual(self.detail('s1', task['id'])['ai_attempts_remaining'], 2)
+
+    def test_teacher_results_csv_is_minimal_and_permission_scoped(self):
+        import csv
+        import io
+
+        aid = self.created(students=('s1', 's2', 's3', 's4'))
+        self.setup_submissions(aid)
+        with SessionLocal.begin() as db:
+            db.get(User, self.uid['s1']).display_name = '=合成学生名'
+        self.start_ok(aid)
+        task, reviewer, detail = self.task_of(aid, 's1')
+        self.assertEqual(self.submit(reviewer, task, self.body(anchors=[self.anchor(detail)])).status_code, 200)
+        path = f'/api/assignments/{aid}/results.csv'
+        response = self.c('teacher').get(path)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn('attachment', response.headers['content-disposition'])
+        self.assertIn(f'peergrade-', response.headers['content-disposition'])
+        self.assertIn(aid[:8], response.headers['content-disposition'])
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        self.assertTrue(response.content.startswith(b'\xef\xbb\xbf'))
+        rows = list(csv.DictReader(io.StringIO(response.content.decode('utf-8-sig'))))
+        self.assertEqual(len(rows), 4)
+        by_name = {row['用户名'].rsplit('_', 1)[-1]: row for row in rows}
+        self.assertEqual(by_name['s1']['显示名称'], "'=合成学生名")
+        self.assertEqual(by_name['s1']['收到互评数'], '1')
+        self.assertEqual(by_name['s1']['互评平均分(15分)'], '12.0')
+        self.assertEqual(by_name['s4']['作业提交'], '未交')
+        self.assertEqual(by_name['s4']['互评平均分(15分)'], '')
+        self.assertNotIn(detail['content_text'], response.text)
+        self.assertNotIn(self.body()['strengths'], response.text)
+        for who in ('teacher2', 's1', 'outsider'):
+            self.assertEqual(self.c(who).get(path).status_code, 404)
+
+    def test_write_endpoints_are_rate_limited_per_user(self):
+        """TRD 11.2：写接口按用户限流，超限返回 429 与 Retry-After，且不影响他人。"""
+        from models import Member
+
+        stamp = f'{self.tag}_flood'
+        with SessionLocal.begin() as db:
+            flood = User(username=stamp, display_name='限流测试', role='STUDENT',
+                         password_hash='rg-unused-hash')  # 不走登录接口，无需 KDF
+            db.add(flood)
+            db.flush()
+            item = Assignment(teacher_id=self.uid['teacher'], title='限流测试', description='验证写接口限流',
+                              rubric=['完整性', '表达', '创新'], submit_deadline=now() + timedelta(hours=1),
+                              review_deadline=now() + timedelta(hours=2), status='SUBMITTING')
+            db.add(item)
+            db.flush()
+            db.add(Member(assignment_id=item.id, student_id=flood.id))
+            aid, flood_id = item.id, flood.id
+        token = f'rg_{stamp}_{uuid.uuid4().hex}'
+        with SessionLocal.begin() as db:
+            db.add(Session(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=flood_id,
+                           expires_at=now() + timedelta(hours=12)))
+        client = TestClient(app)
+        client.cookies.set('pg_session', token)
+        limits = {'submission': 2, 'draft': 240, 'review': 60, 'ai': 30}
+        with patch('app.WRITE_RATE_LIMITS', limits):
+            responses = [client.post(f'/api/assignments/{aid}/submission',
+                                     json={'content_text': '用于验证限流阈值的合成正文'}) for _ in range(4)]
+        codes = [response.status_code for response in responses]
+        # 固定窗口按分钟计数，前三次必定落在同一窗口内。
+        self.assertEqual(codes[:3], [200, 200, 429], codes)
+        self.assertEqual(responses[2].headers.get('retry-after'), '60')
+        self.assertEqual(responses[3].status_code, 429)
+        # 另一个用户不受影响。
+        self.assertEqual(self.c('s1').post(f'/api/assignments/{aid}/submission',
+                                           json={'content_text': '非成员提交应被拒绝'}).status_code, 404)
+
+    def test_submission_budget_charged_once_before_pdf_processing(self):
+        """Ordinary valid/empty PDFs and text share the same per-user attempt budget."""
+        import fitz
+        from starlette.datastructures import UploadFile
+        from app import WRITE_RATE_LIMITS
+
+        aid = self.created()
+        path = f'/api/assignments/{aid}/submission/pdf'
+        with fitz.open() as doc:
+            page = doc.new_page()
+            page.insert_text((72, 72), 'A normal synthetic PDF submission.')
+            valid_pdf = doc.tobytes()
+        with fitz.open() as doc:
+            doc.new_page()
+            empty_pdf = doc.tobytes()
+
+        def upload(who, document=valid_pdf):
+            return self.c(who).post(path, files={'file': ('example.pdf', document, 'application/pdf')})
+
+        fixed = now()
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed if tz else fixed.replace(tzinfo=None)
+
+        with patch('app.WRITE_RATE_LIMITS', {**WRITE_RATE_LIMITS, 'submission': 3}), \
+             patch('app.datetime', FixedDateTime):
+            self.assertEqual(self.work(aid, 's1').status_code, 200)
+            self.assertEqual(upload('s1', empty_pdf).status_code, 422)
+            # A valid PDF consumes one attempt, not another count at persistence.
+            self.assertEqual(upload('s1').status_code, 200)
+            with patch.object(UploadFile, 'read', new_callable=AsyncMock) as read, \
+                 patch('fitz.open') as parse:
+                denied = upload('s1')
+                self.assertEqual(denied.status_code, 429)
+                self.assertEqual(denied.headers['retry-after'], '60')
+                self.assertEqual(upload('outsider').status_code, 404)
+                read.assert_not_awaited()
+                parse.assert_not_called()
+            self.assertEqual(self.work(aid, 's1').status_code, 429)
+            # An authorized peer still has their own budget.
+            self.assertEqual(upload('s2').status_code, 200)
+        self.assertEqual(self.c('s1').get(f'/api/assignments/{aid}').json()
+                         ['my_submission']['content_text'].strip(), 'A normal synthetic PDF submission.')
 
     # ---------- A. 匿名与越权（TRD 5.1 / 9.4 / 12.1 T05）----------
 
@@ -320,9 +720,9 @@ class RegressionTests(unittest.TestCase):
              patch('app.evaluate_quality', new=AsyncMock(return_value=ai_result())):
             self.assertEqual(self.c('s4').get(f'/api/review-tasks/{task_id}').status_code, 404)
             self.assertEqual(self.c('s4').post(f'/api/review-tasks/{task_id}/submit',
-                                               json=self.body()).status_code, 404)
+                                               json=self.body(), headers={'X-Draft-Version': 'none'}).status_code, 404)
             self.assertEqual(self.c('s4').post(f'/api/review-tasks/{task_id}/draft',
-                                               json=self.body()).status_code, 404)
+                                               json=self.body(), headers={'X-Draft-Version': 'none'}).status_code, 404)
             self.assertEqual(self.c('s4').post(f'/api/review-tasks/{task_id}/ai-check',
                                                json=self.body()).status_code, 404)
 
@@ -430,7 +830,7 @@ class RegressionTests(unittest.TestCase):
         task = self.tasks('s1', aid)[0]
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 409)
         self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft',
-                                           json=self.body()).status_code, 409)
+                                           json=self.body(), headers={'X-Draft-Version': 'none'}).status_code, 409)
 
     def test_ai_check_rejected_after_close_when_ai_configured(self):
         aid = self.created()
@@ -512,7 +912,7 @@ class RegressionTests(unittest.TestCase):
             bad = [{**good, **change}]
             self.assertEqual(self.submit('s1', task['id'], self.body(anchors=bad)).status_code, 422)
             self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft',
-                                               json=self.body(anchors=bad)).status_code, 422)
+                                               json=self.body(anchors=bad), headers={'X-Draft-Version': 'none'}).status_code, 422)
         # 被拒绝的请求不应落库为正式评价
         with SessionLocal() as db:
             self.assertIsNone(db.scalar(select(Review).where(Review.review_task_id == task['id'])))
@@ -1011,7 +1411,7 @@ class AdjudicatedFixTests(unittest.TestCase):
       7. healthz 在关键表缺失时不返回 200（P0-1 就绪探测）；
       8. 8 并发 ai-check 时最多预留 3 次总模型调用，失败也不释放额度；
       9. 看板单条 records[].reviews[].ai_checks[].result.quality_level 同样由服务端
-         净化重算（clean_ai_result 接入），区别于第 5 条只断言聚合 ai_levels。
+         净化重算（historical_ai_result 接入），区别于第 5 条只断言聚合 ai_levels。
     源码全部落地后本类应全绿；仅依据明确确认的需求调整契约。
 
     本类使用与 RegressionTests 同构但**独立**的 fixture（独立 uuid 前缀账号/任务），
@@ -1115,8 +1515,9 @@ class AdjudicatedFixTests(unittest.TestCase):
         data.update(overrides)
         return data
 
-    def submit(self, who, task_id, body):
-        return self.c(who).post(f'/api/review-tasks/{task_id}/submit', json=body)
+    def submit(self, who, task_id, body, version='none'):
+        return self.c(who).post(f'/api/review-tasks/{task_id}/submit', json=body,
+                                headers={'X-Draft-Version': version})
 
     def dashboard(self, aid):
         response = self.c('teacher').get(f'/api/assignments/{aid}/dashboard')
@@ -1186,8 +1587,9 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.assertEqual(data['ai_call_count'], 3)
         self.assertEqual(data['ai_success_count'], 0)
         self.assertEqual(data['ai_running_count'], 0)
-        self.assertEqual(self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=body).status_code, 200)
-        self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
+        draft_saved = self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=body, headers={'X-Draft-Version': 'none'})
+        self.assertEqual(draft_saved.status_code, 200)
+        self.assertEqual(self.submit('s1', task['id'], body, version=draft_saved.json()['draft_version']).status_code, 200)
 
     def test_mixed_success_timeout_and_invalid_output_consume_three_attempts(self):
         aid = self.created()
@@ -1395,7 +1797,7 @@ class AdjudicatedFixTests(unittest.TestCase):
 
         task = self.tasks('s1', aid)[0]
         self.assertTrue(task['can_write'])
-        draft = self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=self.body())
+        draft = self.c('s1').post(f'/api/review-tasks/{task["id"]}/draft', json=self.body(), headers={'X-Draft-Version': 'none'})
         self.assertEqual(draft.status_code, 200)
         self.deadlines(aid, review=now() - timedelta(seconds=1))
         self.assertEqual(teacher.get(path).json()['available_actions'], ['close'])
@@ -1524,7 +1926,7 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.assertEqual(self.submit('s1', task['id'], self.body()).status_code, 200)
 
     def test_adjudicated_09_dashboard_single_ai_check_level_is_purified(self):
-        """P1-6 补强：clean_ai_result(c) 已接入 records[].reviews[].ai_checks[].result。
+        """P1-6 补强：historical_ai_result 已接入 records[].reviews[].ai_checks[].result。
         单条结果里的 quality_level 必须按三维度重算，不得透传被篡改/模型自称的 HIGH。
         与第 05 条的区别：05 只断言聚合 ai_levels，本条锁住单条明细字段。"""
         aid = self.created()
@@ -1555,7 +1957,64 @@ class AdjudicatedFixTests(unittest.TestCase):
         self.assertNotEqual(result.get('quality_level'), 'HIGH',
                             f'单条明细不得透传被篡改的 HIGH：{result}')
         self.assertEqual(result.get('quality_level'), 'LOW',
-                         f'三维全 0 应被 clean_ai_result 重算为 LOW：{result}')
+                         f'三维全 0 应被服务端重算为 LOW：{result}')
+
+    def test_dashboard_normalizes_historical_issue_codes_and_counts_reviews(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
+        body = self.body()
+        issues = [{'type': tag, 'message': str(i)} for i, tag in enumerate(
+            ('依据不足', '证据不充分', 'VAGUE', '新标签'))]
+        model_result = {**ai_result(), 'issues': issues}
+        with patch.dict(os.environ, self.ai_env()), \
+             patch('app.evaluate_quality', new=AsyncMock(return_value=model_result)):
+            response = self.c('s1').post(endpoint, json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        normalized = response.json()
+        self.assertEqual([item['type'] for item in normalized['issues']],
+                         ['INSUFFICIENT_EVIDENCE', 'INSUFFICIENT_EVIDENCE', 'VAGUE_FEEDBACK', 'OTHER'])
+        self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
+        with SessionLocal.begin() as db:
+            check = db.scalar(select(AICheck).where(AICheck.review_task_id == task['id']))
+            self.assertEqual(check.result, normalized)
+            # Older databases may contain free-text types and untrusted level values.
+            check.result = {**model_result, 'quality_level': 'LOW'}
+        dashboard = self.dashboard(aid)
+        history = [check for record in dashboard['records'] for review in record['reviews']
+                   if review['id'] == task['id'] for check in review['ai_checks']]
+        self.assertEqual(history[0]['result'], normalized)
+        self.assertEqual(dashboard['ai_levels']['HIGH'], 1)
+        self.assertEqual(dashboard['ai_issue_counts'], {'INSUFFICIENT_EVIDENCE': 1, 'VAGUE_FEEDBACK': 1, 'OTHER': 1})
+        with SessionLocal() as db:
+            check = db.scalar(select(AICheck).where(AICheck.review_task_id == task['id']))
+            self.assertEqual(check.result['issues'], issues)  # Display normalization must not rewrite history.
+
+    def test_dashboard_invalid_historical_scores_have_no_visible_result_or_stats(self):
+        aid = self.created()
+        self.setup_submissions(aid)
+        self.start_ok(aid)
+        task = self.tasks('s1', aid)[0]
+        endpoint = f'/api/review-tasks/{task["id"]}/ai-check'
+        body = self.body()
+        with patch.dict(os.environ, self.ai_env()), \
+             patch('app.evaluate_quality', new=AsyncMock(return_value=ai_result())):
+            self.assertEqual(self.c('s1').post(endpoint, json=body).status_code, 200)
+        self.assertEqual(self.submit('s1', task['id'], body).status_code, 200)
+        with SessionLocal.begin() as db:
+            check = db.scalar(select(AICheck).where(AICheck.review_task_id == task['id']))
+            check.result = {**check.result, 'specificity': 1.0, 'quality_level': 'HIGH',
+                            'issues': [{'type': 'INSUFFICIENT_EVIDENCE', 'message': '补充依据'}]}
+        dashboard = self.dashboard(aid)
+        history = [check for record in dashboard['records'] for review in record['reviews']
+                   if review['id'] == task['id'] for check in review['ai_checks']]
+        self.assertEqual(history[0]['status'], 'SUCCESS')  # historical call still occurred
+        self.assertIsNone(history[0]['result'])  # JSON 1.0 must not be reinterpreted as a score by the browser
+        self.assertEqual(dashboard['ai_success_count'], 1)
+        self.assertEqual(dashboard['ai_levels'], {'LOW': 0, 'MEDIUM': 0, 'HIGH': 0})
+        self.assertEqual(dashboard['ai_issue_counts'], {})
 
 
 if __name__ == '__main__':

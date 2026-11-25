@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "scripts": {"dev": "vite", "build": "vite build", "build:publish": "vite build && vite build --outDir webroot", "test": "node --test"},
+  "scripts": {"dev": "vite", "build": "vite build", "build:publish": "vite build && vite build --outDir webroot", "test": "node --test", "check:browser": "node scripts/check-v22-browser.cjs", "check:browser:classrooms": "node scripts/check-v22b-browser.cjs", "check:browser:learning": "node scripts/check-v23-browser.cjs", "check:browser:account": "node scripts/check-v24-browser.cjs", "check:browser:complete": "cd .. && python -m tests.check_browser_workflow"},
   "dependencies": {"vue": "^3.5.0"},
   "devDependencies": {"@vitejs/plugin-vue": "^5.2.0", "vite": "^6.0.0"}
 }

@@ -57,23 +57,149 @@ def quality_level(scores: list[int]) -> str:
     return "LOW" if total <= 2 else "MEDIUM" if total <= 4 else "HIGH"
 
 
-def validate_ai_result(result: dict) -> dict:
-    """Validate untrusted model output; never accept the model's own level."""
+AI_SCORE_DIMENSIONS = ("specificity", "evidence_grounding", "actionability")
+AI_ISSUE_CODES = ("VAGUE_FEEDBACK", "INSUFFICIENT_EVIDENCE", "LACK_OF_ACTIONABILITY", "OTHER")
+_LEGACY_ISSUE_CODES = {
+    "VAGUE": "VAGUE_FEEDBACK", "LACK_OF_SPECIFICITY": "VAGUE_FEEDBACK",
+    "空泛": "VAGUE_FEEDBACK", "评价空泛": "VAGUE_FEEDBACK", "评语空泛": "VAGUE_FEEDBACK",
+    "具体性不足": "VAGUE_FEEDBACK", "缺乏具体性": "VAGUE_FEEDBACK", "不够具体": "VAGUE_FEEDBACK",
+    "依据不足": "INSUFFICIENT_EVIDENCE", "缺少依据": "INSUFFICIENT_EVIDENCE",
+    "证据不充分": "INSUFFICIENT_EVIDENCE", "证据不足": "INSUFFICIENT_EVIDENCE",
+    "缺少证据": "INSUFFICIENT_EVIDENCE", "缺乏依据": "INSUFFICIENT_EVIDENCE",
+    "IRRELEVANT_EVIDENCE": "INSUFFICIENT_EVIDENCE", "证据不相关": "INSUFFICIENT_EVIDENCE",
+    "NOT_ACTIONABLE": "LACK_OF_ACTIONABILITY", "可操作性不足": "LACK_OF_ACTIONABILITY",
+    "缺乏可操作性": "LACK_OF_ACTIONABILITY", "建议不具体": "LACK_OF_ACTIONABILITY",
+    "建议不明确": "LACK_OF_ACTIONABILITY", "缺少改进方向": "LACK_OF_ACTIONABILITY",
+}
+
+
+def _quality_scores(result):
     if not isinstance(result, dict):
         raise ValueError("AI 返回格式无效")
-    names = ("specificity", "evidence_grounding", "actionability")
-    scores = [result.get(name) for name in names]
-    level = quality_level(scores)
+    scores = [result.get(name) for name in AI_SCORE_DIMENSIONS]
+    return {**dict(zip(AI_SCORE_DIMENSIONS, scores)), "quality_level": quality_level(scores)}
+
+
+def _valid_issue(issue):
+    return (isinstance(issue, dict) and isinstance(issue.get("type"), str)
+            and isinstance(issue.get("message"), str) and len(issue["message"]) <= 500)
+
+
+def _valid_suggestion(suggestion):
+    return isinstance(suggestion, str) and len(suggestion) <= 500
+
+
+def _canonical_issue(issue):
+    label = issue["type"].strip().upper()
+    code = label if label in AI_ISSUE_CODES else _LEGACY_ISSUE_CODES.get(label, "OTHER")
+    return {"type": code, "message": issue["message"]}
+
+
+def diagnostic_candidates(result):
+    candidates = result.get('diagnostics') if isinstance(result, dict) else None
+    if not isinstance(candidates, list):
+        return []
+    clean = []
+    for item in candidates[:3]:
+        if not isinstance(item, dict) or item.get('field') not in ('strengths', 'weaknesses', 'suggestions'):
+            continue
+        strings = ('type', 'review_quote', 'source_quote', 'reason', 'guidance')
+        if any(not isinstance(item.get(key), str) for key in strings):
+            continue
+        if (len(item['review_quote']) > 200 or len(item['source_quote']) > 200
+                or not item['reason'].strip() or not item['guidance'].strip()
+                or len(item['reason']) > 300 or len(item['guidance']) > 300):
+            continue
+        index = item.get('evidence_index')
+        if index is not None and type(index) is not int:
+            continue
+        label = _canonical_issue({'type': item['type'], 'message': ''})['type']
+        clean.append({'type': label, 'field': item['field'], 'review_quote': item['review_quote'],
+                      'source_quote': item['source_quote'], 'evidence_index': index,
+                      'reason': item['reason'], 'guidance': item['guidance']})
+    return clean
+
+
+def unique_span(text, quote):
+    if not isinstance(text, str) or not isinstance(quote, str) or not quote.strip():
+        return None
+    start = text.find(quote)
+    if start < 0 or text.find(quote, start + 1) >= 0:
+        return None
+    return {'start': start, 'end': start + len(quote), 'quote': quote}
+
+
+def ground_diagnostics(result, payload, original_text=None):
+    """Recompute locations from exact quotes; absent or ambiguous references stay unlocated."""
+    if 'diagnostics' not in result:
+        return result
+    payload = payload if isinstance(payload, dict) else {}
+    review = payload.get('review') if isinstance(payload.get('review'), dict) else {}
+    anchors = payload.get('evidence_anchors')
+    quotes = payload.get('evidence_quotes')
+    anchors_verified = False
+    if isinstance(original_text, str) and isinstance(anchors, list) and isinstance(quotes, list):
+        try:
+            validate_anchors(original_text, anchors)
+            anchors_verified = quotes == [anchor['quote'] for anchor in anchors]
+        except (ValueError, TypeError, AttributeError, KeyError):
+            pass
+    grounded = []
+    for item in diagnostic_candidates(result):
+        review_location = unique_span(review.get(item['field']), item['review_quote'])
+        source_location = None
+        index, quote = item['evidence_index'], item['source_quote']
+        if anchors_verified and type(index) is int and 0 <= index < len(anchors):
+            anchor = anchors[index]
+            match = unique_span(anchor['quote'], quote)
+            if match:
+                source_location = {'start': anchor['start'] + match['start'], 'end': anchor['start'] + match['end'],
+                                   'quote': quote, 'kind': 'SELECTED_EVIDENCE', 'content_hash': anchor['content_hash']}
+        elif index is None and isinstance(original_text, str) and unique_span(payload.get('submission_excerpt'), quote):
+            match = unique_span(original_text, quote)
+            if match:
+                source_location = {**match, 'kind': 'EXCERPT', 'content_hash': content_hash(original_text)}
+        grounded.append({**item, 'review_location': review_location, 'source_location': source_location,
+                         'location_status': 'LOCATED' if review_location and source_location else 'UNCERTAIN'})
+    return {**result, 'diagnostics': grounded}
+
+
+def validate_ai_result(result: dict) -> dict:
+    """Validate model output and normalize every issue to a stable code."""
+    summary = _quality_scores(result)
     issues, suggestions = result.get("issues"), result.get("suggestions")
     if not isinstance(issues, list) or len(issues) > 10 or not isinstance(suggestions, list) or len(suggestions) > 10:
         raise ValueError("AI 返回的问题或建议格式无效")
-    if any(not isinstance(i, dict) or not isinstance(i.get("type"), str) or not isinstance(i.get("message"), str) or len(i["message"]) > 500 for i in issues):
+    if not all(map(_valid_issue, issues)):
         raise ValueError("AI 返回的问题格式无效")
-    if any(not isinstance(s, str) or len(s) > 500 for s in suggestions):
+    if not all(map(_valid_suggestion, suggestions)):
         raise ValueError("AI 返回的建议格式无效")
-    return {**dict(zip(names, scores)), "quality_level": level,
-            "issues": [{"type": i["type"][:100], "message": i["message"]} for i in issues],
-            "suggestions": suggestions}
+    cleaned = {**summary, "issues": [_canonical_issue(i) for i in issues], "suggestions": suggestions}
+    if 'diagnostics' in result:
+        cleaned['diagnostics'] = diagnostic_candidates(result)
+    return cleaned
+
+
+def historical_ai_result(result, payload=None, original_text=None) -> dict | None:
+    """Read legacy results without trusting their level or optional display fields."""
+    try:
+        summary = _quality_scores(result)
+    except ValueError:
+        return None
+    issues, suggestions = result.get("issues"), result.get("suggestions")
+    cleaned = {**summary,
+            "issues": [_canonical_issue(i) for i in issues if _valid_issue(i)][:10] if isinstance(issues, list) else [],
+            "suggestions": [s for s in suggestions if _valid_suggestion(s)][:10] if isinstance(suggestions, list) else []}
+    if 'diagnostics' in result:
+        cleaned['diagnostics'] = diagnostic_candidates(result)
+        return ground_diagnostics(cleaned, payload, original_text)
+    return cleaned
+
+
+def ai_dimension_means(results):
+    samples = list(results)
+    return {key: (sum(result[key] for result in samples) / len(samples) if samples else None)
+            for key in AI_SCORE_DIMENSIONS}
 
 
 def feedback_summary(reviews: list[list[int]]) -> dict:

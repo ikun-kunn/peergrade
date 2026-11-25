@@ -1,5 +1,6 @@
 import unittest
-from domain import allocate, content_hash, feedback_summary, quality_level, score_review, validate_ai_result, validate_anchors
+from domain import (allocate, content_hash, feedback_summary, historical_ai_result, quality_level, score_review,
+                    validate_ai_result, validate_anchors)
 
 
 class DomainTests(unittest.TestCase):
@@ -40,6 +41,23 @@ class DomainTests(unittest.TestCase):
         self.assertEqual(summary['average_total'], 12.5)
         self.assertTrue(summary['high_disagreement'])
         self.assertTrue(feedback_summary([[1, 2, 3]])['incomplete'])
+
+    def test_ai_issue_codes_are_canonical_with_original_messages(self):
+        base = {'specificity': 1, 'evidence_grounding': 0, 'actionability': 1, 'suggestions': []}
+        aliases = ['评价空泛', '  INSUFFICIENT_EVIDENCE ', '证据不充分', 'NOT_ACTIONABLE', '未知标签', '']
+        result = validate_ai_result({**base, 'issues': [{'type': code, 'message': f'问题 {i + 1}'}
+                                                        for i, code in enumerate(aliases)]})
+        self.assertEqual([item['type'] for item in result['issues']], [
+            'VAGUE_FEEDBACK', 'INSUFFICIENT_EVIDENCE', 'INSUFFICIENT_EVIDENCE', 'LACK_OF_ACTIONABILITY', 'OTHER', 'OTHER'])
+        self.assertEqual([item['message'] for item in result['issues']], [f'问题 {i + 1}' for i in range(len(aliases))])
+        self.assertEqual(validate_ai_result(result), result)
+
+    def test_historical_quality_ignores_bad_optional_fields_not_bad_scores(self):
+        base = {'specificity': 1, 'evidence_grounding': 0, 'actionability': 1, 'quality_level': 'HIGH'}
+        self.assertEqual(historical_ai_result(base), {**base, 'quality_level': 'LOW', 'issues': [], 'suggestions': []})
+        for invalid in (1.0, True, None, 3):
+            self.assertIsNone(historical_ai_result({**base, 'specificity': invalid}))
+        self.assertIsNone(historical_ai_result({'evidence_grounding': 0, 'actionability': 1}))
 
 
 if __name__ == '__main__':

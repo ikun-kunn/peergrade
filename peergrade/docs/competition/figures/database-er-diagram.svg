@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1450" viewBox="0 0 2400 1450" role="img" aria-label="PeerGrade 数据库 ER 图">
+<defs><marker id="arrow" viewBox="0 0 12 12" refX="10.8" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M1 1 L11 6 L1 11 Z" fill="#4b7963"/></marker><marker id="blue-arrow" viewBox="0 0 12 12" refX="10.8" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M1 1 L11 6 L1 11 Z" fill="#285779"/></marker></defs>
+<rect width="2400" height="1450" fill="#ffffff"/>
+<text x="55" y="63" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="42" fill="#18382e" font-weight="600" text-anchor="start">PeerGrade 数据库 ER 图</text>
+<text x="56" y="105" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="23" fill="#526a61" font-weight="400" text-anchor="start">16 张实际 ORM 应用表 · 按业务分组 · 字段列明全部外键目标与主要约束</text>
+<rect x="47" y="145" width="536" height="1120" rx="18" fill="#f7faf8" stroke="#d7e5db" stroke-width="2"/>
+<text x="68" y="189" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="30" fill="#286447" font-weight="600" text-anchor="start">身份与班级</text>
+<rect x="637" y="145" width="536" height="1120" rx="18" fill="#f7faf8" stroke="#d7e5db" stroke-width="2"/>
+<text x="658" y="189" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="30" fill="#286447" font-weight="600" text-anchor="start">任务与作业</text>
+<rect x="1227" y="145" width="536" height="1120" rx="18" fill="#f7faf8" stroke="#d7e5db" stroke-width="2"/>
+<text x="1248" y="189" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="30" fill="#286447" font-weight="600" text-anchor="start">评价任务与检测</text>
+<rect x="1817" y="145" width="536" height="1120" rx="18" fill="#f7faf8" stroke="#d7e5db" stroke-width="2"/>
+<text x="1838" y="189" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="30" fill="#286447" font-weight="600" text-anchor="start">发布反馈与修订</text>
+<polyline points="570,285 650,285" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="315,385 315,440" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="315,785 315,845" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="905,402 905,443" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1160,304 1190,304 1190,500 1240,500" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1160,790 1218,790 1218,579 1240,579" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1495,650 1495,727" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#arrow)"/>
+<polyline points="1750,588 1787,588 1787,1048 1750,1048" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1750,518 1830,518" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#arrow)"/>
+<polyline points="2085,657 2085,727" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#arrow)"/>
+<polyline points="2340,565 2370,565 2370,1045 2340,1045" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#arrow)"/>
+<rect x="60" y="213" width="510" height="172" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="61" y="214" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="76" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">users</text>
+<text x="555" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">用户</text>
+<text x="76" y="285" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id   ·   UQ username</text>
+<text x="76" y="313" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">role   ·   password_hash</text>
+<text x="76" y="341" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">display_name   ·   created_at</text>
+<rect x="60" y="443" width="510" height="145" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="61" y="444" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="76" y="476" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">sessions</text>
+<text x="555" y="476" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">会话</text>
+<text x="76" y="515" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  token_hash</text>
+<text x="76" y="543" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  user_id → users (N:1)</text>
+<text x="76" y="571" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">expires_at</text>
+<rect x="60" y="640" width="510" height="145" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="61" y="641" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="76" y="673" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">classrooms</text>
+<text x="555" y="673" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">班级</text>
+<text x="76" y="712" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id   ·   UQ invite_code</text>
+<text x="76" y="740" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  teacher_id → users (N:1)</text>
+<text x="76" y="768" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">name   ·   created_at</text>
+<rect x="60" y="848" width="510" height="170" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="61" y="849" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="76" y="881" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">classroom_members</text>
+<text x="555" y="881" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">班级成员</text>
+<text x="76" y="920" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK* FK  classroom_id → classrooms</text>
+<text x="76" y="948" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK* FK  student_id → users</text>
+<text x="76" y="976" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">两个外键均为 N:1</text>
+<text x="76" y="1004" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">status   ·   created_at</text>
+<rect x="60" y="1095" width="510" height="127" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="61" y="1096" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="76" y="1128" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">rate_buckets</text>
+<text x="555" y="1128" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">支持</text>
+<text x="76" y="1167" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK*  key   ·   PK* window</text>
+<text x="76" y="1195" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">count  ·  独立限流计数</text>
+<rect x="650" y="213" width="510" height="189" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="651" y="214" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="666" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">assignments</text>
+<text x="1145" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">任务</text>
+<text x="666" y="285" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="666" y="313" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  teacher_id → users (N:1)</text>
+<text x="666" y="341" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">title   ·   rubric   ·   status</text>
+<text x="666" y="369" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">deadlines   ·   allocation_seed</text>
+<rect x="650" y="445" width="510" height="175" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="651" y="446" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="666" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">assignment_members</text>
+<text x="1145" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">任务成员</text>
+<text x="666" y="517" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="666" y="545" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  assignment_id → assignments</text>
+<text x="666" y="573" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  student_id → users</text>
+<text x="666" y="601" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ  (assignment_id, student_id)</text>
+<rect x="650" y="703" width="510" height="202" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="651" y="704" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="666" y="736" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">submissions</text>
+<text x="1145" y="736" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">作业</text>
+<text x="666" y="775" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="666" y="803" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  assignment_id → assignments</text>
+<text x="666" y="831" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  student_id → users</text>
+<text x="666" y="859" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ  (assignment_id, student_id)</text>
+<text x="666" y="887" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">content_type   ·   content_text/hash</text>
+<rect x="650" y="995" width="510" height="165" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="651" y="996" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="666" y="1028" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">classroom_assignments</text>
+<text x="1145" y="1028" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">班级任务</text>
+<text x="666" y="1067" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK FK  assignment_id → assignments</text>
+<text x="666" y="1095" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  classroom_id → classrooms</text>
+<text x="666" y="1123" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">任务 1:0..1 班级关联；班级 1:N</text>
+<rect x="1240" y="445" width="510" height="205" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1241" y="446" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1256" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">review_tasks</text>
+<text x="1735" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">分配</text>
+<text x="1256" y="517" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="1256" y="545" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  assignment_id → assignments</text>
+<text x="1256" y="573" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  submission_id → submissions</text>
+<text x="1256" y="601" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  reviewer_id → users</text>
+<text x="1256" y="629" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ  (submission_id, reviewer_id)</text>
+<rect x="1240" y="730" width="510" height="151" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1241" y="731" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1256" y="763" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">review_drafts</text>
+<text x="1735" y="763" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">草稿</text>
+<text x="1256" y="802" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="1256" y="830" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ FK  review_task_id → review_tasks</text>
+<text x="1256" y="858" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">content   ·   updated_at</text>
+<rect x="1240" y="963" width="510" height="164" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1241" y="964" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1256" y="996" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">ai_checks</text>
+<text x="1735" y="996" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">AI 检测</text>
+<text x="1256" y="1035" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="1256" y="1063" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  review_task_id → review_tasks</text>
+<text x="1256" y="1091" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">input_hash   ·   input_data</text>
+<text x="1256" y="1119" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">result   ·   status   ·   created_at</text>
+<rect x="1830" y="213" width="510" height="197" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1831" y="214" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1846" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">submission_revisions</text>
+<text x="2325" y="246" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">修订</text>
+<text x="1846" y="285" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="1846" y="313" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">FK  submission_id → submissions</text>
+<text x="1846" y="341" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ  (submission_id, version)</text>
+<text x="1846" y="369" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">content_text   ·   note</text>
+<text x="1846" y="397" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">adoption_snapshot   ·   created_at</text>
+<rect x="1830" y="445" width="510" height="212" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1831" y="446" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1846" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">reviews</text>
+<text x="2325" y="478" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">正式评价</text>
+<text x="1846" y="517" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK  id</text>
+<text x="1846" y="545" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">UQ FK  review_task_id → review_tasks</text>
+<text x="1846" y="573" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">scores   ·   total_score</text>
+<text x="1846" y="601" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">strengths / weaknesses / suggestions</text>
+<text x="1846" y="629" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">evidence_anchors   ·   submitted_at</text>
+<rect x="1830" y="730" width="510" height="177" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1831" y="731" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1846" y="763" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">review_cases</text>
+<text x="2325" y="763" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">申诉复核</text>
+<text x="1846" y="802" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK FK  review_id → reviews</text>
+<text x="1846" y="830" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">student_reason   ·   teacher_reason</text>
+<text x="1846" y="858" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">resolution   ·   opened_at</text>
+<text x="1846" y="886" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">resolved_at 及申请/标记时间</text>
+<rect x="1830" y="963" width="510" height="150" rx="12" fill="white" stroke="#a6bfb0" stroke-width="2"/>
+<rect x="1831" y="964" width="508" height="46" rx="10" fill="#e3f0e7" stroke="#e3f0e7" stroke-width="0"/>
+<text x="1846" y="996" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="26" fill="#18382e" font-weight="600" text-anchor="start">feedback_adoptions</text>
+<text x="2325" y="996" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="17" fill="#286447" font-weight="600" text-anchor="end">采纳</text>
+<text x="1846" y="1035" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">PK FK  review_id → reviews</text>
+<text x="1846" y="1063" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#344b41" font-weight="400" text-anchor="start">decision   ·   reason   ·   updated_at</text>
+<text x="1258" y="249" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="28" fill="#286447" font-weight="600" text-anchor="start">边界与计数</text>
+<text x="1258" y="286" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#526a61" font-weight="400" text-anchor="start">每次互评任务至多一条草稿与正式评价。</text>
+<text x="1258" y="319" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#526a61" font-weight="400" text-anchor="start">AI 检测业务限制新发起最多 3 次。</text>
+<text x="1258" y="352" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#526a61" font-weight="400" text-anchor="start">每份原作业最多 5 个独立修订版本。</text>
+<polyline points="65,1307 130,1307" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<text x="148" y="1315" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="24" fill="#526a61" font-weight="400" text-anchor="start">实线：主表 1 → N</text>
+<polyline points="460,1307 525,1307" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#arrow)"/>
+<text x="543" y="1315" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="24" fill="#526a61" font-weight="400" text-anchor="start">虚线：主表 1 → 0..1</text>
+<text x="985" y="1315" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="24" fill="#526a61" font-weight="400" text-anchor="start">PK 主键 · PK* 组合主键成员 · FK 外键 · UQ 唯一约束</text>
+<text x="65" y="1360" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="24" fill="#526a61" font-weight="400" text-anchor="start">连线突出主业务关系；所有跨组外键在表卡内指明目标，未标明唯一的 FK 均为 N:1。</text>
+<text x="65" y="1397" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="24" fill="#526a61" font-weight="400" text-anchor="start">Alembic 的 alembic_version 独立维护迁移版本（0004），不计入 16 张 ORM 应用表。</text>
+</svg>

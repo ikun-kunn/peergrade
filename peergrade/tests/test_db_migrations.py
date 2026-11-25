@@ -13,11 +13,13 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 import db_migrations
 from db_migrations import (
-    HEAD_REVISION, INITIAL_REVISION, MigrationError, _config,
+    HEAD_REVISION, INITIAL_REVISION, DRAFT_REVISION, CLASSROOM_REVISION, MigrationError, _config,
     database_ready, database_status, upgrade_database,
 )
 from migrations.schema_v1 import schema_v1
-from models import Base, Assignment, Review, ReviewDraft, ReviewTask, Submission, User
+from migrations.schema_v2 import schema_v2
+from migrations.schema_v3 import schema_v3
+from models import Base, Assignment, Classroom, ClassroomMember, Review, ReviewCase, ReviewDraft, ReviewTask, Submission, User
 from tests.isolated_database import postgres_schema
 
 
@@ -82,7 +84,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertEqual(set(inspect(engine).get_table_names()), set(Base.metadata.tables) | {'alembic_version'})
 
     def test_frozen_head_matches_application_ddl(self):
-        frozen = schema_v1(with_drafts=True)
+        frozen = schema_v3()
         self.assertEqual(set(frozen.tables), set(Base.metadata.tables))
         for dialect in (sqlite.dialect(), postgresql.dialect()):
             for name, current in Base.metadata.tables.items():
@@ -116,8 +118,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
     def test_unversioned_database_before_drafts_gets_new_table(self):
         with disposable_engine() as engine:
-            Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables
-                                                     if table.name != 'review_drafts'])
+            schema_v1().create_all(engine)
             seed(engine)
             before = business_snapshot(engine)
             self.assertEqual(database_status(engine), ('legacy', INITIAL_REVISION))
@@ -140,6 +141,45 @@ class DatabaseMigrationTests(unittest.TestCase):
             upgrade_database(engine)
             self.assert_current(engine)
             self.assertEqual(business_snapshot(engine), before)
+
+    def test_v22_draft_revision_and_legacy_drafts_upgrade_without_losing_data(self):
+        for versioned in (False, True):
+            with self.subTest(versioned=versioned), disposable_engine() as engine:
+                if versioned:
+                    with engine.begin() as connection:
+                        command.upgrade(_config(connection), DRAFT_REVISION)
+                else:
+                    schema_v1(with_drafts=True).create_all(engine)
+                seed(engine, drafts=True)
+                before = business_snapshot(engine, drafts=True)
+                self.assertEqual(database_status(engine), ('versioned' if versioned else 'legacy', DRAFT_REVISION))
+                upgrade_database(engine)
+                self.assert_current(engine)
+                self.assertEqual(business_snapshot(engine, drafts=True), before)
+
+    def test_classroom_revision_upgrades_without_losing_members_or_cases(self):
+        for versioned in (False, True):
+            with self.subTest(versioned=versioned), disposable_engine() as engine:
+                if versioned:
+                    with engine.begin() as connection:
+                        command.upgrade(_config(connection), CLASSROOM_REVISION)
+                else:
+                    schema_v2().create_all(engine)
+                seed(engine, drafts=True)
+                with Session(engine) as session:
+                    session.add(Classroom(id='class', teacher_id='teacher', name='原班级', invite_code='fixture'))
+                    session.flush()
+                    session.add(ClassroomMember(classroom_id='class', student_id='student', status='ACTIVE'))
+                    session.add(ReviewCase(review_id='review', student_reason='原复核申请'))
+                    session.commit()
+                before = business_snapshot(engine, drafts=True)
+                self.assertEqual(database_status(engine), ('versioned' if versioned else 'legacy', CLASSROOM_REVISION))
+                upgrade_database(engine)
+                self.assert_current(engine)
+                self.assertEqual(business_snapshot(engine, drafts=True), before)
+                with Session(engine) as session:
+                    self.assertEqual(session.get(ClassroomMember, ('class', 'student')).status, 'ACTIVE')
+                    self.assertEqual(session.get(ReviewCase, 'review').student_reason, '原复核申请')
 
     def test_partial_legacy_schema_is_not_stamped_or_changed(self):
         with disposable_engine() as engine:
@@ -185,8 +225,7 @@ class DatabaseMigrationTests(unittest.TestCase):
 
     def test_failed_legacy_upgrade_rolls_back_stamp_and_new_table(self):
         with disposable_engine() as engine:
-            Base.metadata.create_all(engine, tables=[table for table in Base.metadata.sorted_tables
-                                                     if table.name != 'review_drafts'])
+            schema_v1().create_all(engine)
             seed(engine)
             before = business_snapshot(engine)
             original = db_migrations._assert_schema
