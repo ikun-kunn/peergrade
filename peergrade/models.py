@@ -118,3 +118,58 @@ class AICheck(Base):
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Classroom(Base):
+    __tablename__ = 'classrooms'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    teacher_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    invite_code: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ClassroomMember(Base):
+    __tablename__ = 'classroom_members'
+    classroom_id: Mapped[str] = mapped_column(ForeignKey('classrooms.id'), primary_key=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey('users.id'), primary_key=True, index=True)
+    status: Mapped[str] = mapped_column(String(10))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ClassroomAssignment(Base):
+    __tablename__ = 'classroom_assignments'
+    assignment_id: Mapped[str] = mapped_column(ForeignKey('assignments.id'), primary_key=True)
+    classroom_id: Mapped[str] = mapped_column(ForeignKey('classrooms.id'), index=True)
+
+
+class ReviewCase(Base):
+    __tablename__ = 'review_cases'
+    review_id: Mapped[str] = mapped_column(ForeignKey('reviews.id'), primary_key=True)
+    student_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    teacher_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    student_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    teacher_flagged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FeedbackAdoption(Base):
+    __tablename__ = 'feedback_adoptions'
+    review_id: Mapped[str] = mapped_column(ForeignKey('reviews.id'), primary_key=True)
+    decision: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SubmissionRevision(Base):
+    __tablename__ = 'submission_revisions'
+    __table_args__ = (UniqueConstraint('submission_id', 'version'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    submission_id: Mapped[str] = mapped_column(ForeignKey('submissions.id'), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    content_text: Mapped[str] = mapped_column(Text)
+    note: Mapped[str] = mapped_column(Text)
+    adoption_snapshot: Mapped[list] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

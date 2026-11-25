@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960" role="img" aria-label="PeerGrade 系统架构">
+<defs><marker id="arrow" viewBox="0 0 12 12" refX="10.8" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M1 1 L11 6 L1 11 Z" fill="#4b7963"/></marker><marker id="blue-arrow" viewBox="0 0 12 12" refX="10.8" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M1 1 L11 6 L1 11 Z" fill="#285779"/></marker></defs>
+<rect width="1600" height="960" fill="#ffffff"/>
+<text x="55" y="63" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="42" fill="#18382e" font-weight="600" text-anchor="start">PeerGrade 系统架构</text>
+<text x="56" y="105" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="23" fill="#526a61" font-weight="400" text-anchor="start">模块化单体 · 同源访问 · 外部模型可选 · 数据与运营权限分离</text>
+<rect x="50" y="154" width="305" height="665" rx="18" fill="#f1f7f2" stroke="#d3e3d8" stroke-width="2"/>
+<rect x="650" y="154" width="575" height="665" rx="18" fill="#f8faf9" stroke="#c3d6c9" stroke-width="2"/>
+<text x="74" y="199" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="27" fill="#286447" font-weight="600" text-anchor="start">访问层</text>
+<text x="676" y="199" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="27" fill="#286447" font-weight="600" text-anchor="start">应用层  FastAPI 同源 Web</text>
+<polyline points="325,315 374,315 374,403 398,403" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="325,547 374,547 374,449 398,449" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="615,426 651,426" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1194,625 1242,625 1242,548 1268,548" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1410,383 1410,472" fill="none" stroke="#4b7963" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1194,751 1268,751" fill="none" stroke="#285779" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="10 7" marker-end="url(#blue-arrow)"/>
+<rect x="80" y="243" width="245" height="146" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="100" y="278" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="27" fill="#18382e" font-weight="600" text-anchor="start">教师浏览器</text>
+<text x="100" y="309" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">建班、发布任务</text>
+<text x="100" y="338" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">统计、复核、导出</text>
+<rect x="80" y="475" width="245" height="148" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="100" y="510" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="27" fill="#18382e" font-weight="600" text-anchor="start">学生浏览器</text>
+<text x="100" y="541" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">提交、证据互评</text>
+<text x="100" y="570" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">反馈、修订、档案</text>
+<text x="201" y="734" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="23" fill="#286447" font-weight="600" text-anchor="middle">桌面 / 手机</text>
+<rect x="398" y="355" width="217" height="144" rx="14" fill="#e4f1e8" stroke="#7da88b" stroke-width="2"/>
+<text x="418" y="390" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="29" fill="#18382e" font-weight="600" text-anchor="start">Caddy</text>
+<text x="418" y="421" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">HTTPS 反向代理</text>
+<text x="418" y="450" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">请求体大小限制</text>
+<text x="505" y="524" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="21" fill="#526a61" font-weight="400" text-anchor="middle">同源请求</text>
+<rect x="680" y="224" width="514" height="88" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="700" y="259" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">Vue 3 + Vite</text>
+<text x="700" y="290" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">前端页面、状态反馈与证据交互</text>
+<rect x="680" y="326" width="514" height="89" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="700" y="361" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">账号与资源权限</text>
+<text x="700" y="392" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">会话 Cookie、角色约束、账号修改</text>
+<rect x="680" y="429" width="514" height="112" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="700" y="464" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">任务与互评 API</text>
+<text x="700" y="495" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">班级、作业、分配、草稿、反馈、看板</text>
+<text x="700" y="524" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">状态检查、权限校验、事务提交</text>
+<rect x="680" y="555" width="514" height="112" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="700" y="590" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">domain.py 与 SQLAlchemy</text>
+<text x="700" y="621" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">均衡分配、锚点校验、评分统计</text>
+<text x="700" y="650" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">ORM 持久化与唯一约束</text>
+<rect x="680" y="692" width="248" height="104" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="700" y="727" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#18382e" font-weight="600" text-anchor="start">monitoring.py</text>
+<text x="700" y="758" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">脱敏状态日志</text>
+<text x="700" y="787" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">服务资源采样</text>
+<rect x="946" y="692" width="248" height="104" rx="14" fill="white" stroke="#9eb8a9" stroke-width="2"/>
+<text x="966" y="727" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="22" fill="#18382e" font-weight="600" text-anchor="start">ai_service.py</text>
+<text x="966" y="758" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">结构化提示</text>
+<text x="966" y="787" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">限时与输出校验</text>
+<rect x="1268" y="240" width="281" height="143" rx="14" fill="#f1f7f2" stroke="#b5cdbd" stroke-width="2"/>
+<text x="1288" y="275" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">运营终端</text>
+<text x="1288" y="306" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">manage.py</text>
+<text x="1288" y="335" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">Alembic 版本迁移</text>
+<text x="1288" y="364" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">账号与过期会话</text>
+<rect x="1268" y="472" width="281" height="152" rx="14" fill="#e4f1e8" stroke="#7da88b" stroke-width="2"/>
+<text x="1288" y="507" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#18382e" font-weight="600" text-anchor="start">关系数据库</text>
+<text x="1288" y="538" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">PostgreSQL 16 生产目标</text>
+<text x="1288" y="567" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">SQLite 独立本地开发</text>
+<text x="1288" y="596" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">同一 ORM 模型</text>
+<rect x="1268" y="689" width="281" height="128" rx="14" fill="#eff5fa" stroke="#a5c4dc" stroke-width="2"/>
+<text x="1288" y="724" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#285779" font-weight="600" text-anchor="start">外部模型 API</text>
+<text x="1288" y="755" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">可选 HTTPS 服务</text>
+<text x="1288" y="784" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="20" fill="#526a61" font-weight="400" text-anchor="start">缺省允许人工互评</text>
+<text x="1230" y="709" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="19" fill="#285779" font-weight="600" text-anchor="middle">可选</text>
+<text x="55" y="875" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="25" fill="#286447" font-weight="600" text-anchor="start">运行边界</text>
+<text x="205" y="875" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="21" fill="#526a61" font-weight="400" text-anchor="start">模型密钥只在服务端配置；浏览器从同一入口取得页面与 API；生产数据库不直接公开。</text>
+<text x="55" y="915" font-family="'Microsoft YaHei','Noto Sans CJK SC','Segoe UI',sans-serif" font-size="21" fill="#526a61" font-weight="400" text-anchor="start">实际证据  本机 PostgreSQL + Caddy TLS 与 SQLite 合成全流程；目标公网与 Docker 主机仍须验收。</text>
+</svg>

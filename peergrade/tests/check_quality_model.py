@@ -6,10 +6,12 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from time import perf_counter
 
 from ai_service import DEEPSEEK_API_URL, DEEPSEEK_MODEL, request_quality
+from domain import content_hash, ground_diagnostics, unique_span
 
 
 RUBRIC = ['内容完整性', '逻辑与表达', '分析与创新']
@@ -51,20 +53,89 @@ def synthetic_cases():
         }, expected
 
 
-async def check_model(url, key, model):
-    report = {'requested_model': model, 'checked_at': datetime.now(timezone.utc).isoformat(), 'cases': []}
+def validate_pricing(raw, model):
+    """Operator-supplied rates, never market-price assumptions or credentials."""
+    allowed = {'model', 'currency', 'as_of', 'source', 'input_per_million', 'output_per_million', 'cached_input_per_million'}
+    if not isinstance(raw, dict) or set(raw) - allowed or raw.get('model') != model:
+        raise ValueError('Pricing must use the requested model and only documented fields.')
+    pricing = {'model': model}
+    for key in ('currency', 'as_of', 'source'):
+        value = raw.get(key)
+        if not isinstance(value, str) or not value.strip() or len(value) > 300:
+            raise ValueError(f'Pricing requires a nonempty {key}.')
+        pricing[key] = value.strip()
+    if not (len(pricing['currency']) == 3 and pricing['currency'].isascii() and pricing['currency'].isalpha() and pricing['currency'].isupper()):
+        raise ValueError('Use a three-letter uppercase currency code.')
+    try:
+        if datetime.strptime(pricing['as_of'], '%Y-%m-%d').date().isoformat() != pricing['as_of']:
+            raise ValueError('Use YYYY-MM-DD for as_of.')
+    except ValueError as exc:
+        raise ValueError('Use YYYY-MM-DD for as_of.') from exc
+    for key in ('input_per_million', 'output_per_million', 'cached_input_per_million'):
+        if key == 'cached_input_per_million' and key not in raw:
+            continue
+        value = raw.get(key)
+        try:
+            if not isinstance(value, (str, int, float)) or type(value) is bool or len(str(value)) > 32:
+                raise InvalidOperation
+            rate = Decimal(str(value))
+            if not rate.is_finite() or not 0 <= rate <= 1_000_000 or rate.as_tuple().exponent < -12:
+                raise InvalidOperation
+        except InvalidOperation as exc:
+            raise ValueError(f'Invalid nonnegative decimal rate: {key}.') from exc
+        pricing[key] = format(rate, 'f')
+    return pricing
+
+
+def estimate_cost(usage, pricing):
+    if usage is None:
+        return None, 'usage_unavailable'
+    if pricing is None:
+        return None, 'pricing_unavailable'
+    input_rate, output_rate = Decimal(pricing['input_per_million']), Decimal(pricing['output_per_million'])
+    cached_rate = Decimal(pricing.get('cached_input_per_million', pricing['input_per_million']))
+    if cached_rate != input_rate and usage['prompt_cache_hit_tokens'] is None:
+        return None, 'cache_split_unavailable'
+    if cached_rate == input_rate:
+        input_cost = usage['prompt_tokens'] * input_rate
+    else:
+        input_cost = usage['prompt_cache_hit_tokens'] * cached_rate + usage['prompt_cache_miss_tokens'] * input_rate
+    return format((input_cost + usage['completion_tokens'] * output_rate) / Decimal(1_000_000), 'f'), 'estimated'
+
+
+async def check_model(url, key, model, pricing=None):
+    pricing = validate_pricing(pricing, model) if pricing is not None else None
+    report = {'requested_model': model, 'checked_at': datetime.now(timezone.utc).isoformat(),
+              'input_kind': 'synthetic', 'pricing': pricing, 'cases': []}
     for name, payload, expected in synthetic_cases():
         row = {'case': name, 'input': payload, 'expected_level': expected,
-               'human_assessment': None, 'reported_model': None, 'output': None}
+               'human_assessment': None, 'reported_model': None, 'output': None, 'usage': None,
+               'estimated_cost': None, 'cost_status': 'request_error'}
         started = perf_counter()
         try:
             response = await request_quality(url, key, model, json.dumps(payload, ensure_ascii=False, sort_keys=True))
-            row.update(status='success', reported_model=response.model, output=response.result)
+            source = payload['submission_excerpt']
+            anchors = [unique_span(source, quote) for quote in payload['evidence_quotes']]
+            grounded = response.result
+            if all(anchor is not None for anchor in anchors):
+                anchored = {**payload, 'evidence_anchors': [{**anchor, 'content_hash': content_hash(source)} for anchor in anchors]}
+                grounded = ground_diagnostics(response.result, anchored, source)
+            cost, state = estimate_cost(response.usage, pricing)
+            row.update(status='success', reported_model=response.model, output=grounded, usage=response.usage,
+                       estimated_cost=cost, cost_status=state)
         except Exception as exc:
             # The exception text can contain provider URLs or echoed input.
             row.update(status='error', error_type=type(exc).__name__)
         row['elapsed_ms'] = round((perf_counter() - started) * 1000)
         report['cases'].append(row)
+    costs = [Decimal(row['estimated_cost']) for row in report['cases'] if row['estimated_cost'] is not None]
+    known = sum(costs, Decimal(0))
+    report['cost_summary'] = {'currency': pricing['currency'] if pricing else None,
+                              'usage_known_cases': sum(row['usage'] is not None for row in report['cases']),
+                              'cost_known_cases': len(costs), 'unknown_cost_cases': len(report['cases']) - len(costs),
+                              'estimated_subtotal_known': format(known, 'f') if costs else None,
+                              'estimated_total': format(known, 'f') if len(costs) == len(report['cases']) else None,
+                              'note': 'Estimates based on supplied rates, not an invoice. Failed requests may still be billable.'}
     return report
 
 
@@ -72,6 +143,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, required=True, help='Path for the JSON result')
     parser.add_argument('--deepseek', action='store_true', help='Use the official DeepSeek endpoint and default non-thinking model')
+    parser.add_argument('--pricing', type=Path, help='Optional JSON of operator-verified model-specific token rates')
     args = parser.parse_args()
     if args.out.exists():
         parser.error('Choose a new output file; existing reports are not overwritten.')
@@ -84,7 +156,11 @@ def main():
         key = (key or getpass.getpass('DeepSeek API key (hidden; not saved): ')).strip()
     if not all((url, key, model)):
         parser.error('Set AI_API_URL, AI_API_KEY and AI_MODEL before running the check.')
-    report = asyncio.run(check_model(url, key, model))
+    try:
+        pricing = validate_pricing(json.loads(args.pricing.read_text(encoding='utf-8')), model) if args.pricing else None
+    except (OSError, ValueError, UnicodeError) as exc:
+        parser.error(f'Pricing file invalid: {type(exc).__name__}; check documented format.')
+    report = asyncio.run(check_model(url, key, model, pricing))
     with args.out.open('x', encoding='utf-8') as stream:
         stream.write(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     recorded = sum(case['status'] == 'success' for case in report['cases'])

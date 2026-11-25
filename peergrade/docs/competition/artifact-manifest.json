@@ -1,0 +1,97 @@
+{
+  "candidate": "PeerGrade V2.4",
+  "date": "2026-11-22",
+  "report_pages": 11,
+  "files": [
+    {
+      "path": "ai-contract.md",
+      "bytes": 6119,
+      "sha256": "b73ab8d3e4b63e09e7ad2ea2f0728873a621f7992a7147a1e3383376d98851fb"
+    },
+    {
+      "path": "algorithm-and-evidence.md",
+      "bytes": 3866,
+      "sha256": "a02abee423b6b7e8d4903ae537e01334f5462659be5f6b752c466dc08867b06f"
+    },
+    {
+      "path": "database-data-dictionary.md",
+      "bytes": 7777,
+      "sha256": "f992c6ef2322ebe0d9d2036333743bf4f0cb90cb900aefeb1115687471aac21c"
+    },
+    {
+      "path": "database-schema.json",
+      "bytes": 23464,
+      "sha256": "462720e0f1da202572b3ac37855895d9451ffa4d4c6f88272b81088d10178fbc"
+    },
+    {
+      "path": "experiment-report-template.md",
+      "bytes": 4997,
+      "sha256": "216face24807e05812d0cc2a1967dd90df5f40ab2ebd3038b152f9f515d75dc4"
+    },
+    {
+      "path": "figures/database-er-diagram.png",
+      "bytes": 402488,
+      "sha256": "101a4c0c22df2a684fad378baacc0c181e6d60ee8625eb2c1ec521cee53ca96d"
+    },
+    {
+      "path": "figures/database-er-diagram.svg",
+      "bytes": 27457,
+      "sha256": "1ae96c331cf3c8fbee68c1601cd589a2d09b291ced0007fe95ed3796f524b16c"
+    },
+    {
+      "path": "figures/learning-workflow.png",
+      "bytes": 103241,
+      "sha256": "3bb5bb9502eda0c757a787f4828894a44e0d24bd1ea71fa23a2c82769fbc447e"
+    },
+    {
+      "path": "figures/learning-workflow.svg",
+      "bytes": 7598,
+      "sha256": "b43e5196a168288aa2ba5768b4ff6c2f0c72d6df42894732fe7721b2edd0f093"
+    },
+    {
+      "path": "figures/system-architecture.png",
+      "bytes": 171834,
+      "sha256": "766672f1aeaf6cacfff28c40943181fa80fc79b07f81a603ea2ceaee01323975"
+    },
+    {
+      "path": "figures/system-architecture.svg",
+      "bytes": 12197,
+      "sha256": "afcdad51d00fe068770727d78d3cf0c1c70230bbd5a0707c724e9e80b3b05be7"
+    },
+    {
+      "path": "PeerGrade-技术设计报告-V2.4.docx",
+      "bytes": 703152,
+      "sha256": "1de35b735386cdbaee00a88ee49c37723b6d9f90bcbf67c8cd6538e5bbe3c5c2"
+    },
+    {
+      "path": "PeerGrade-技术设计报告-V2.4.pdf",
+      "bytes": 934727,
+      "sha256": "298692ed92679ec7d0c585bc0e99567f1bbff08a16364d5b9e5fd7ee3c825f66"
+    },
+    {
+      "path": "project-introduction.md",
+      "bytes": 1580,
+      "sha256": "4f841788e952482b168e5fe9a63fdbf28b63d8051052e63d1c942daf9f15dfa9"
+    },
+    {
+      "path": "README.md",
+      "bytes": 2940,
+      "sha256": "f3331709478abf7afbad15ccbc944861602820ff8a216458b4a32c1506be55f6"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 7574,
+      "sha256": "a8f9ff706445f0d49f08b0f3935d5f78e385919e4e4ede61f19cbabfccf6f9ba"
+    },
+    {
+      "path": "verification-evidence.json",
+      "bytes": 10888,
+      "sha256": "e2dac4eb18a0085b361f730d38e2667deecb845870e15b2e59bb3c400a75ad34"
+    },
+    {
+      "path": "verification-evidence.md",
+      "bytes": 2499,
+      "sha256": "37f2ba93d465e488802906a8b898f529c850602caca7a05f01420c331a154d86"
+    }
+  ]
+}

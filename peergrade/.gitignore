@@ -1,5 +1,7 @@
 .venv/
 .deps/
+.pg-test/
+.caddy-test/
 __pycache__/
 *.py[cod]
 *.db

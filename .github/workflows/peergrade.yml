@@ -47,6 +47,15 @@ jobs:
           python -m unittest discover -s tests -v
           python -m tests.check_release
           python -m tests.check_restore
+      - name: Install the browser test runner
+        working-directory: peergrade/frontend
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+          npx --no-install playwright install --with-deps chromium
+      - name: Full desktop and mobile role workflow
+        run: python -m tests.check_browser_workflow
+      - name: Browser request timeout and draft recovery
+        run: node frontend/scripts/check-request-timeout-browser.cjs
 
   postgres:
     name: PostgreSQL 16 regression and restore
@@ -87,3 +96,153 @@ jobs:
           python -m tests.check_release
           python -m tests.check_restore
           python -m tests.check_production
+
+  compose-production-smoke:
+    name: Docker Compose production smoke
+    # Every configured trigger (main push, pull request, or manual run) validates the stack.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      COMPOSE_PROJECT_NAME: peergrade_ci_${{ github.run_id }}_${{ github.run_attempt }}
+      DOMAIN: localhost
+      PUBLIC_ORIGIN: https://localhost:18443
+      POSTGRES_PASSWORD: peergrade_compose_fixture_only
+      DATABASE_URL: postgresql+psycopg://peergrade:peergrade_compose_fixture_only@db:5432/peergrade
+      AI_API_URL: ''
+      AI_API_KEY: ''
+      AI_MODEL: ''
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build and boot the production stack on loopback
+        run: |
+          docker compose version
+          docker compose config --quiet
+          # Keep the real Caddyfile and all service dependencies. Replace only
+          # its host port mapping so the disposable stack is not public.
+          printf '%s\n' 'services:' '  proxy:' '    ports: !override' '      - "127.0.0.1:18443:443"' > "$RUNNER_TEMP/peergrade-compose-ci.yml"
+          docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" config --quiet
+          timeout 12m docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" up -d --build
+          docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" ps -a
+          init_id="$(docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" ps -a -q init)"
+          test -n "$init_id"
+          test "$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$init_id")" = 'exited 0'
+      - name: Check migration head and verify Caddy's loopback TLS
+        run: |
+          docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" exec -T web python -c "from app import engine; from db_migrations import database_status, HEAD_REVISION; assert database_status(engine) == ('versioned', HEAD_REVISION)"
+          # Caddy uses a local issuer for localhost. Read only its public root
+          # certificate, then verify HTTPS normally (never disable TLS checks).
+          ready=0
+          for attempt in {1..30}; do
+            if timeout 8s docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" exec -T proxy cat /data/caddy/pki/authorities/local/root.crt > "$RUNNER_TEMP/peergrade-ca.crt" 2>/dev/null &&
+               curl --noproxy '*' --cacert "$RUNNER_TEMP/peergrade-ca.crt" --connect-timeout 2 --max-time 4 --silent --show-error --fail "$PUBLIC_ORIGIN/healthz" > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+      - name: Verify built assets, registration and secure session through HTTPS
+        run: |
+          python3 - <<'PY'
+          import http.cookiejar
+          import json
+          import os
+          import ssl
+          from html.parser import HTMLParser
+          from http.cookies import SimpleCookie
+          from pathlib import Path
+          from urllib.request import (
+              HTTPCookieProcessor, HTTPSHandler, ProxyHandler, Request, build_opener,
+          )
+
+          origin = os.environ['PUBLIC_ORIGIN']
+          certificate = Path(os.environ['RUNNER_TEMP']) / 'peergrade-ca.crt'
+          tls = ssl.create_default_context(cafile=str(certificate))
+          def client():
+              return build_opener(ProxyHandler({}), HTTPSHandler(context=tls),
+                                  HTTPCookieProcessor(http.cookiejar.CookieJar()))
+          opener = client()
+
+          def request(path, payload=None, expected=200, session=opener):
+              data = None if payload is None else json.dumps(payload).encode()
+              headers = {'Origin': origin}
+              if data is not None:
+                  headers['Content-Type'] = 'application/json'
+              with session.open(Request(origin + path, data=data, headers=headers), timeout=10) as response:
+                  assert response.status == expected, (path, response.status)
+                  return response.headers, response.read()
+
+          class AssetParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.assets = []
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  if tag == 'script' and attrs.get('src', '').startswith('/assets/'):
+                      self.assets.append(attrs['src'])
+                  if tag == 'link' and attrs.get('rel') == 'stylesheet' and attrs.get('href', '').startswith('/assets/'):
+                      self.assets.append(attrs['href'])
+
+          assert json.loads(request('/healthz')[1]) == {'status': 'ok'}
+          _, html = request('/')
+          parser = AssetParser()
+          parser.feed(html.decode())
+          assert any(asset.endswith('.js') for asset in parser.assets), 'built Vue script missing'
+          assert any(asset.endswith('.css') for asset in parser.assets), 'built stylesheet missing'
+          for asset in parser.assets:
+              assert request(asset)[1], f'empty asset: {asset}'
+
+          credentials = {'username': 'compose_fixture_student', 'password': 'synthetic CI password only'}
+          registration = {**credentials, 'display_name': 'Compose fixture',
+                          'password_confirmation': credentials['password']}
+          _, body = request('/api/auth/register', registration, expected=201)
+          assert json.loads(body)['role'] == 'STUDENT'
+          headers, body = request('/api/auth/login', credentials)
+          assert json.loads(body)['role'] == 'STUDENT'
+          cookie = SimpleCookie(headers['Set-Cookie'])['pg_session']
+          assert cookie['secure'] and cookie['httponly'] and cookie['samesite'].lower() == 'strict'
+          assert json.loads(request('/api/auth/me')[1])['role'] == 'STUDENT'
+          assert json.loads(request('/api/assignments')[1]) == []
+          from urllib.error import HTTPError
+
+          def unauthorized(path, payload=None, session=opener):
+              try:
+                  request(path, payload, session=session)
+              except HTTPError as error:
+                  assert error.code == 401, error.code
+              else:
+                  raise AssertionError('old account/session still authorized')
+
+          other = client()
+          request('/api/auth/login', credentials, session=other)
+          replacement = 'synthetic new CI password only'
+          headers, _ = request('/api/auth/change-password', {
+              'current_password': credentials['password'], 'new_password': replacement,
+              'password_confirmation': replacement,
+          })
+          deleted = SimpleCookie(headers['Set-Cookie'])['pg_session']
+          assert deleted['secure'] and deleted['httponly'] and deleted['max-age'] == '0'
+          unauthorized('/api/auth/me')
+          unauthorized('/api/auth/me', session=other)
+          unauthorized('/api/auth/login', credentials)
+          request('/api/auth/login', {**credentials, 'password': replacement})
+          request('/api/auth/logout', {})
+          unauthorized('/api/auth/me')
+          print('Compose smoke: migrations, verified TLS, built assets, account change and revoked secure sessions passed.')
+          PY
+      - name: Show failure diagnostics
+        if: failure()
+        run: |
+          if test -f "$RUNNER_TEMP/peergrade-compose-ci.yml"; then
+            docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" ps -a || true
+            docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" logs --tail=80 init web proxy db || true
+          fi
+      - name: Remove the disposable CI stack
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/peergrade-compose-ci.yml"; then
+            docker compose -f compose.yaml -f "$RUNNER_TEMP/peergrade-compose-ci.yml" down --volumes --remove-orphans
+          fi
